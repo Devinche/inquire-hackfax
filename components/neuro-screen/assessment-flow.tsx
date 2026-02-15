@@ -64,7 +64,7 @@ export interface StoredAssessment {
 const STEPS = [
   { label: "Welcome", description: "Camera setup and instructions" },
   { label: "Speech", description: "Verbal fluency assessment" },
-  { label: "Motor", description: "Hand stability tracking" },
+  { label: "Motor", description: "Motor sequencing assessment" },
   { label: "Eyes", description: "Eye movement tracking" },
   { label: "Results", description: "Assessment summary" },
 ]
@@ -632,7 +632,7 @@ export function AssessmentFlow() {
                       </div>
                       <div className="flex items-center gap-2">
                         <div className="h-1.5 w-1.5 rounded-full bg-primary" />
-                        Motor: Hold your hand steady (15s)
+                        Motor: Perform Fist-Edge-Palm sequence (15s)
                       </div>
                       <div className="flex items-center gap-2">
                         <div className="h-1.5 w-1.5 rounded-full bg-primary" />

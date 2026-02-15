@@ -99,41 +99,41 @@ function getSpeechAssessment(matchingCount: number) {
 function getMotorAssessment(stability: number) {
   if (stability >= 85) {
     return {
-      label: "Minimal Tremor",
+      label: "Excellent Sequencing",
       color: "text-accent",
       bgColor: "bg-accent/10",
       icon: CheckCircle2,
-      plainExplanation: `Your hand stability score is ${stability.toFixed(1)} out of 100, which means your hand was very steady. Everyone has a tiny, invisible tremor in their hands, and your result is consistent with that normal baseline.`,
-      detail: `Stability ${stability.toFixed(1)}/100 indicates minimal postural tremor, consistent with normal physiological tremor (8-12 Hz, amplitude <0.5mm per Elble, 2003). MediaPipe hand landmark variance at this level is near the noise floor (Becktepe et al., 2025).`,
+      plainExplanation: `Your motor sequencing score is ${stability.toFixed(1)} out of 100, indicating excellent performance on the Luria Fist-Edge-Palm test. You performed the sequence accurately with good timing and minimal errors, which suggests normal motor planning and execution.`,
+      detail: `Score ${stability.toFixed(1)}/100 on the Luria alternating hand movements test indicates intact motor sequencing. The Luria test assesses frontal lobe function and motor programming (Luria, 1966). Performance reflects accuracy, timing consistency, and absence of perseveration.`,
     }
   }
   if (stability >= 70) {
     return {
-      label: "Mild Tremor",
+      label: "Good Sequencing",
       color: "text-primary",
       bgColor: "bg-primary/10",
       icon: CheckCircle2,
-      plainExplanation: `Your hand stability score is ${stability.toFixed(1)} out of 100, showing slight movement. This is very common and usually caused by caffeine, stress, tiredness, or even just being cold. This level of hand movement is generally not a medical concern.`,
-      detail: `Stability ${stability.toFixed(1)}/100 shows slight positional variation. Enhanced physiological tremor is common and influenced by caffeine, fatigue, or stress (Elble, 2003). The MDS task force (Deuschl et al., 2018) classifies this as within the physiological range.`,
+      plainExplanation: `Your motor sequencing score is ${stability.toFixed(1)} out of 100, showing good performance with minor inconsistencies. Small timing variations or occasional errors are common and can be influenced by fatigue, distraction, or unfamiliarity with the task.`,
+      detail: `Score ${stability.toFixed(1)}/100 shows adequate motor sequencing with minor timing variations. The Luria test is sensitive to frontal-subcortical dysfunction (Dubois et al., 2000). Mild inconsistencies may reflect normal variability or task novelty.`,
     }
   }
   if (stability >= 50) {
     return {
-      label: "Moderate Tremor",
+      label: "Moderate Difficulty",
       color: "text-yellow-500",
       bgColor: "bg-yellow-500/10",
       icon: AlertTriangle,
-      plainExplanation: `Your hand stability score is ${stability.toFixed(1)} out of 100, indicating noticeable hand movement during the test. This could be caused by anxiety, caffeine, medication side effects, or conditions such as essential tremor. If you regularly notice shaking, consider mentioning it to your doctor.`,
-      detail: `Stability ${stability.toFixed(1)}/100 suggests elevated postural tremor. Essential tremor affects ~4% of adults over 40 (Louis & Ferreira, 2010) and presents at 4-12 Hz. Logarithmic variance exceeds the normal range (Becktepe et al., 2025).`,
+      plainExplanation: `Your motor sequencing score is ${stability.toFixed(1)} out of 100, indicating noticeable difficulty with the sequence. This could be due to anxiety, unfamiliarity with the task, or difficulty with motor planning. If you experience regular coordination issues, consider discussing with a healthcare provider.`,
+      detail: `Score ${stability.toFixed(1)}/100 suggests impaired motor sequencing. Deficits in the Luria test may indicate frontal lobe dysfunction, seen in conditions affecting motor planning such as Parkinson's disease, frontotemporal dementia, or executive dysfunction (Dubois et al., 2000).`,
     }
   }
   return {
-    label: "Elevated Tremor",
+    label: "Significant Difficulty",
     color: "text-destructive",
     bgColor: "bg-destructive/10",
     icon: AlertTriangle,
-    plainExplanation: `Your hand stability score is ${stability.toFixed(1)} out of 100, indicating significant hand movement. While this could be due to nervousness, cold hands, or caffeine, consistent shaking at this level may be worth discussing with a healthcare professional.`,
-    detail: `Stability ${stability.toFixed(1)}/100 indicates significant postural tremor. Pathological tremor conditions include ET (4-12 Hz) and Parkinson's disease (3-6 Hz rest tremor). Haubenberger & Hallett (2018, NEJM) review ET as the most common adult movement disorder.`,
+    plainExplanation: `Your motor sequencing score is ${stability.toFixed(1)} out of 100, indicating significant difficulty performing the sequence. While this could be due to nervousness or task unfamiliarity, persistent motor sequencing problems may warrant evaluation by a healthcare professional.`,
+    detail: `Score ${stability.toFixed(1)}/100 indicates marked motor sequencing impairment. The Luria test is sensitive to frontal-subcortical pathology (Dubois et al., 2000). Significant deficits may be seen in Parkinson's disease, progressive supranuclear palsy, or other conditions affecting motor programming.`,
   }
 }
 
@@ -252,9 +252,9 @@ function getRecommendations(
   // Motor-specific
   if (handScore < 50 && handScore > 0) {
     recs.push({
-      title: "Consult a Doctor About Hand Tremor",
+      title: "Consult a Doctor About Motor Coordination",
       description:
-        "Significant hand tremor can have many treatable causes, including essential tremor, medication side effects, thyroid problems, or anxiety. A doctor can perform a physical exam, review your medications, and order blood tests if needed.",
+        "Difficulty with motor sequencing tasks can have various causes, including neurological conditions affecting motor planning, medication side effects, or cognitive factors. A doctor can perform a neurological exam and determine if further evaluation is needed.",
       type: "action",
       icon: Stethoscope,
     })
@@ -1382,14 +1382,12 @@ export function ResultsDashboard({
               Motor Score (0-100)
             </p>
             <p>
-              We track your wrist position using the camera many times per second
-              and measure how much it moves from its average position. Less
-              movement means better stability. The first 20% of the recording is
-              ignored (settling period) because everyone needs a moment to
-              position their hand. If your hand shook badly during any period,
-              that pulls the final score down permanently so it stays realistic.
-              A steady hand scores near 100, while significant shaking pushes
-              toward 0.
+              We track your hand movements as you perform the Luria Fist-Edge-Palm sequence.
+              The score reflects your accuracy (performing the correct poses in order),
+              timing consistency (smooth transitions between poses), and completion
+              (number of full cycles completed). Higher scores indicate better motor
+              sequencing ability. The test measures frontal lobe function and motor
+              planning, which are important for coordinated movements.
             </p>
           </div>
 
