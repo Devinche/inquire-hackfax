@@ -550,7 +550,7 @@ export function EyeTracking({
       )}
 
       {status === "tracking" && (
-        <div className="space-y-3">
+        <div className="space-y-2">
           <div className="flex items-center justify-between text-sm">
             <span className="text-muted-foreground">Time remaining</span>
             <span className="font-mono font-semibold text-foreground">
@@ -559,8 +559,8 @@ export function EyeTracking({
           </div>
           <Progress value={progress} className="h-2" />
 
-          {/* Moving dot target with gaze indicator */}
-          <div className="relative mx-auto aspect-video w-full overflow-hidden rounded-lg bg-secondary">
+          {/* Moving dot target with gaze indicator - reduced height */}
+          <div className="relative mx-auto w-full overflow-hidden rounded-lg bg-secondary" style={{ height: "min(50vh, 400px)" }}>
             <canvas
               ref={canvasRef}
               width={640}
@@ -603,18 +603,18 @@ export function EyeTracking({
           </div>
 
           {smoothness !== null && (
-            <div className="rounded-lg bg-secondary p-3 text-center">
+            <div className="rounded-lg bg-secondary p-2 text-center">
               <p className="text-xs text-muted-foreground">
                 Live Smoothness Score
               </p>
-              <p className="text-2xl font-bold text-foreground">
+              <p className="text-xl font-bold text-foreground">
                 {smoothness.toFixed(1)}
               </p>
               <p className="text-xs text-muted-foreground">out of 100</p>
             </div>
           )}
 
-          <div className="flex items-center justify-center gap-2">
+          <div className="flex items-center justify-center gap-2 py-1">
             <span className="relative flex h-3 w-3">
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-75" />
               <span className="relative inline-flex h-3 w-3 rounded-full bg-accent" />

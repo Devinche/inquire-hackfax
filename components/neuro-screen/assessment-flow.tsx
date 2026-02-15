@@ -678,11 +678,11 @@ export function AssessmentFlow({ userEmail, userRole, onLogout }: AssessmentFlow
         <main className="flex flex-1 flex-col items-center p-4 sm:p-6">
           {/* Side-by-side layout: camera + task on larger screens */}
           {showCamera ? (
-            <div className="flex w-full max-w-6xl flex-col gap-4 lg:flex-row">
-              {/* Camera */}
-              <div className="w-full shrink-0 lg:w-[480px] animate-in fade-in slide-in-from-left-8 duration-500">
-                <Card className="sticky top-4 overflow-hidden border-border bg-card">
-                  <div className="relative aspect-[4/3] w-full bg-secondary">
+            <div className="flex w-full h-full flex-col gap-4 lg:flex-row lg:h-[calc(100vh-120px)]">
+              {/* Camera - fills half the page on left */}
+              <div className="w-full lg:w-1/2 flex flex-col">
+                <Card className="flex-1 overflow-hidden border-border bg-card">
+                  <div className="relative h-full w-full bg-secondary">
                     <video
                       ref={videoRef}
                       autoPlay
@@ -730,8 +730,8 @@ export function AssessmentFlow({ userEmail, userRole, onLogout }: AssessmentFlow
                 </Card>
               </div>
 
-              {/* Task content */}
-              <div className="flex-1 animate-in fade-in slide-in-from-right-8 duration-500">
+              {/* Task content - fills half the page on right */}
+              <div className="w-full lg:w-1/2 flex flex-col overflow-y-auto">
                 {step === 1 && (
                   <SpeechTask
                     onComplete={handleSpeechComplete}
