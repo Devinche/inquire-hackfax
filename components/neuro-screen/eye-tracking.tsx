@@ -5,13 +5,14 @@ import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Eye, CheckCircle2, Loader2 } from "lucide-react"
 import { Progress } from "@/components/ui/progress"
+import type { EyeData } from "./assessment-flow"
 
 const TASK_DURATION = 15 // seconds
 
 interface EyeTrackingProps {
   videoRef: React.RefObject<HTMLVideoElement | null>
   cameraOn: boolean
-  onComplete: (data: { smoothness: number; samples: number }) => void
+  onComplete: (data: EyeData) => void
 }
 
 export function EyeTracking({
@@ -33,7 +34,7 @@ export function EyeTracking({
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const dotIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // Load MediaPipe
+  // Load MediaPipe -- no delegate specified, lets MediaPipe pick the best option
   useEffect(() => {
     let cancelled = false
 
@@ -53,7 +54,6 @@ export function EyeTracking({
           baseOptions: {
             modelAssetPath:
               "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
-            delegate: "GPU",
           },
         })
         if (!cancelled) {
@@ -112,7 +112,6 @@ export function EyeTracking({
       }
 
       const now = performance.now()
-      // MediaPipe requires strictly increasing timestamps
       if (now <= lastTime) {
         rafRef.current = requestAnimationFrame(processFrame)
         return
@@ -123,12 +122,10 @@ export function EyeTracking({
         const results = landmarker.detectForVideo(video, Math.round(now))
         if (results?.faceLandmarks?.length > 0) {
           const landmarks = results.faceLandmarks[0]
-          // Use reliable eye corner landmarks:
-          // Left eye inner corner: 133, outer corner: 33
-          // Right eye inner corner: 362, outer corner: 263
-          // These are always available in the face mesh
-          const leftEye = landmarks[133] ?? landmarks[33]
-          const rightEye = landmarks[362] ?? landmarks[263]
+          // Use reliable eye corner landmarks (always present in face mesh):
+          // Left eye inner corner: 133, Right eye inner corner: 362
+          const leftEye = landmarks[133]
+          const rightEye = landmarks[362]
 
           if (leftEye && rightEye) {
             const avgX = (leftEye.x + rightEye.x) / 2
@@ -146,18 +143,28 @@ export function EyeTracking({
             prevY = avgY
           }
 
-          // Draw landmarks on canvas
+          // Draw face mesh landmarks on canvas overlay
           if (canvasRef.current) {
             const ctx = canvasRef.current.getContext("2d")
             if (ctx) {
               const w = canvasRef.current.width
               const h = canvasRef.current.height
               ctx.clearRect(0, 0, w, h)
-              ctx.fillStyle = "#0ea5e9"
+              ctx.fillStyle = "hsl(199, 89%, 48%)"
               landmarks.forEach((lm: { x: number; y: number }) => {
                 ctx.beginPath()
                 ctx.arc(lm.x * w, lm.y * h, 1, 0, 2 * Math.PI)
                 ctx.fill()
+              })
+              // Highlight eye landmarks
+              ctx.fillStyle = "hsl(160, 84%, 39%)"
+              ;[133, 362, 33, 263].forEach((idx) => {
+                const lm = landmarks[idx]
+                if (lm) {
+                  ctx.beginPath()
+                  ctx.arc(lm.x * w, lm.y * h, 3, 0, 2 * Math.PI)
+                  ctx.fill()
+                }
               })
             }
           }
@@ -182,13 +189,24 @@ export function EyeTracking({
         if (rafRef.current) cancelAnimationFrame(rafRef.current)
         if (intervalRef.current) clearInterval(intervalRef.current)
         if (dotIntervalRef.current) clearInterval(dotIntervalRef.current)
-        const finalSmoothness = computeSmoothness(deltasRef.current)
+
+        const allDeltas = deltasRef.current
+        const finalSmoothness = computeSmoothness(allDeltas)
+        const meanDelta =
+          allDeltas.length > 0
+            ? allDeltas.reduce((s, d) => s + d, 0) / allDeltas.length
+            : 0
+        const maxDelta =
+          allDeltas.length > 0 ? Math.max(...allDeltas) : 0
+
         setStatus("done")
-        // Defer the parent state update to avoid setState-during-render
         setTimeout(() => {
           onComplete({
             smoothness: Math.round(finalSmoothness * 10) / 10,
-            samples: deltasRef.current.length,
+            samples: allDeltas.length,
+            deltas: allDeltas.slice(-300),
+            meanDelta,
+            maxDelta,
           })
         }, 0)
       }

@@ -9,10 +9,32 @@ import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Camera, CameraOff, Activity, Brain } from "lucide-react"
 
+export interface SpeechData {
+  duration: number
+  words: string[]
+  letter: string
+}
+
+export interface HandData {
+  stability: number
+  samples: number
+  positions: Array<{ x: number; y: number }>
+  varianceX: number
+  varianceY: number
+}
+
+export interface EyeData {
+  smoothness: number
+  samples: number
+  deltas: number[]
+  meanDelta: number
+  maxDelta: number
+}
+
 export interface AssessmentResults {
-  speech: { duration: number; fileSize: number } | null
-  hand: { stability: number; samples: number } | null
-  eye: { smoothness: number; samples: number } | null
+  speech: SpeechData | null
+  hand: HandData | null
+  eye: EyeData | null
 }
 
 const STEPS = [
@@ -88,7 +110,7 @@ export function AssessmentFlow() {
   }, [])
 
   const handleSpeechComplete = useCallback(
-    (data: { duration: number; fileSize: number }) => {
+    (data: SpeechData) => {
       setResults((prev) => ({ ...prev, speech: data }))
       handleNext()
     },
@@ -96,7 +118,7 @@ export function AssessmentFlow() {
   )
 
   const handleHandComplete = useCallback(
-    (data: { stability: number; samples: number }) => {
+    (data: HandData) => {
       setResults((prev) => ({ ...prev, hand: data }))
       handleNext()
     },
@@ -104,7 +126,7 @@ export function AssessmentFlow() {
   )
 
   const handleEyeComplete = useCallback(
-    (data: { smoothness: number; samples: number }) => {
+    (data: EyeData) => {
       setResults((prev) => ({ ...prev, eye: data }))
       handleNext()
     },
@@ -128,8 +150,12 @@ export function AssessmentFlow() {
             <Brain className="h-5 w-5 text-primary-foreground" />
           </div>
           <div>
-            <h1 className="text-lg font-semibold text-foreground">Neuro Screen</h1>
-            <p className="text-xs text-muted-foreground">Cognitive Assessment Tool</p>
+            <h1 className="text-lg font-semibold text-foreground">
+              Neuro Screen
+            </h1>
+            <p className="text-xs text-muted-foreground">
+              Cognitive Assessment Tool
+            </p>
           </div>
         </div>
 
@@ -180,7 +206,7 @@ export function AssessmentFlow() {
 
       {/* Main content */}
       <main className="flex flex-1 flex-col items-center gap-6 p-6">
-        {/* Video container - always rendered, fixed size */}
+        {/* Video container */}
         {step < 4 && (
           <Card className="relative w-full max-w-[640px] overflow-hidden border-border bg-card">
             <div className="relative aspect-[4/3] w-full bg-secondary">
@@ -195,7 +221,9 @@ export function AssessmentFlow() {
               {!cameraOn && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-secondary">
                   <CameraOff className="h-12 w-12 text-muted-foreground" />
-                  <p className="text-sm text-muted-foreground">Camera is off</p>
+                  <p className="text-sm text-muted-foreground">
+                    Camera is off
+                  </p>
                   <Button size="sm" onClick={startCamera}>
                     Turn On Camera
                   </Button>
@@ -209,7 +237,6 @@ export function AssessmentFlow() {
                   </p>
                 </div>
               )}
-              {/* Step indicator overlay */}
               {cameraOn && step > 0 && step < 4 && (
                 <div className="absolute left-3 top-3 flex items-center gap-2 rounded-full bg-background/80 px-3 py-1.5 backdrop-blur-sm">
                   <Activity className="h-3.5 w-3.5 text-accent" />
@@ -238,15 +265,16 @@ export function AssessmentFlow() {
               <div className="flex flex-col gap-2 text-sm text-muted-foreground">
                 <div className="flex items-center gap-2">
                   <div className="h-1.5 w-1.5 rounded-full bg-primary" />
-                  Speech Task: Say as many words as possible starting with a letter
+                  Speech Task: Say as many words as possible starting with a
+                  letter (60s)
                 </div>
                 <div className="flex items-center gap-2">
                   <div className="h-1.5 w-1.5 rounded-full bg-primary" />
-                  Motor Task: Hold your hand steady in front of the camera
+                  Motor Task: Hold your hand steady in front of the camera (15s)
                 </div>
                 <div className="flex items-center gap-2">
                   <div className="h-1.5 w-1.5 rounded-full bg-primary" />
-                  Eye Task: Follow the dot with your eyes
+                  Eye Task: Follow the moving dot with your eyes (15s)
                 </div>
               </div>
               <Button
@@ -259,9 +287,7 @@ export function AssessmentFlow() {
             </Card>
           )}
 
-          {step === 1 && (
-            <SpeechTask onComplete={handleSpeechComplete} />
-          )}
+          {step === 1 && <SpeechTask onComplete={handleSpeechComplete} />}
 
           {step === 2 && (
             <HandTracking

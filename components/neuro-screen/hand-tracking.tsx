@@ -5,13 +5,14 @@ import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Hand, CheckCircle2, Loader2 } from "lucide-react"
 import { Progress } from "@/components/ui/progress"
+import type { HandData } from "./assessment-flow"
 
 const TASK_DURATION = 15 // seconds
 
 interface HandTrackingProps {
   videoRef: React.RefObject<HTMLVideoElement | null>
   cameraOn: boolean
-  onComplete: (data: { stability: number; samples: number }) => void
+  onComplete: (data: HandData) => void
 }
 
 export function HandTracking({
@@ -30,7 +31,7 @@ export function HandTracking({
   const positionsRef = useRef<Array<{ x: number; y: number }>>([])
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // Load MediaPipe
+  // Load MediaPipe -- no delegate specified so it picks the best available automatically
   useEffect(() => {
     let cancelled = false
 
@@ -48,7 +49,6 @@ export function HandTracking({
           baseOptions: {
             modelAssetPath:
               "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
-            delegate: "GPU",
           },
         })
         if (!cancelled) {
@@ -105,7 +105,6 @@ export function HandTracking({
       }
 
       const now = performance.now()
-      // MediaPipe requires strictly increasing timestamps
       if (now <= lastTime) {
         rafRef.current = requestAnimationFrame(processFrame)
         return
@@ -139,13 +138,30 @@ export function HandTracking({
         doneRef.current = true
         if (rafRef.current) cancelAnimationFrame(rafRef.current)
         if (intervalRef.current) clearInterval(intervalRef.current)
-        const finalStability = computeStability(positionsRef.current)
+
+        const pts = positionsRef.current
+        const finalStability = computeStability(pts)
+
+        // Compute per-axis variance for detailed results
+        let varianceX = 0
+        let varianceY = 0
+        if (pts.length > 1) {
+          const meanX = pts.reduce((s, p) => s + p.x, 0) / pts.length
+          const meanY = pts.reduce((s, p) => s + p.y, 0) / pts.length
+          varianceX =
+            pts.reduce((s, p) => s + (p.x - meanX) ** 2, 0) / pts.length
+          varianceY =
+            pts.reduce((s, p) => s + (p.y - meanY) ** 2, 0) / pts.length
+        }
+
         setStatus("done")
-        // Defer the parent state update to avoid setState-during-render
         setTimeout(() => {
           onComplete({
             stability: Math.round(finalStability * 10) / 10,
-            samples: positionsRef.current.length,
+            samples: pts.length,
+            positions: pts.slice(-300), // keep last 300 for charting
+            varianceX,
+            varianceY,
           })
         }, 0)
       }
