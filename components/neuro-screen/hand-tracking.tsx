@@ -60,24 +60,46 @@ interface HandTrackingProps {
 }
 
 /**
- * Suppress MediaPipe's WASM INFO log ("Created TensorFlow Lite XNNPACK delegate for CPU")
- * which is routed through console.error by the WASM stderr handler.
+ * Known MediaPipe WASM log fragments that are harmless internal warnings.
+ * These come from C++ code compiled to WASM and are routed through
+ * console.error (stderr) and console.warn by the Emscripten runtime.
+ */
+const MEDIAPIPE_NOISE = [
+  "Created TensorFlow Lite XNNPACK delegate for CPU",
+  "OpenGL error checking is disabled",
+  "inference_feedback_manager",
+  "landmark_projection_calculator",
+  "Feedback manager requires a model with a single signature inference",
+  "Using NORM_RECT without IMAGE_DIMENSIONS",
+]
+
+function isMediaPipeNoise(args: unknown[]): boolean {
+  const msg = typeof args[0] === "string" ? args[0] : ""
+  return MEDIAPIPE_NOISE.some((frag) => msg.includes(frag))
+}
+
+/**
+ * Suppress MediaPipe's WASM internal warnings/info that are routed through
+ * console.error (stderr) and console.warn by the Emscripten runtime.
+ * These are benign messages from gl_context.cc, inference_feedback_manager.cc,
+ * and landmark_projection_calculator.cc that cannot be disabled via config.
  */
 function suppressMediaPipeInfo<T>(fn: () => T): T {
   const origError = console.error
+  const origWarn = console.warn
   console.error = (...args: unknown[]) => {
-    if (
-      typeof args[0] === "string" &&
-      args[0].includes("Created TensorFlow Lite XNNPACK delegate for CPU")
-    ) {
-      return
-    }
+    if (isMediaPipeNoise(args)) return
     origError.apply(console, args)
+  }
+  console.warn = (...args: unknown[]) => {
+    if (isMediaPipeNoise(args)) return
+    origWarn.apply(console, args)
   }
   try {
     return fn()
   } finally {
     console.error = origError
+    console.warn = origWarn
   }
 }
 
@@ -421,18 +443,39 @@ export function HandTracking({
           "@mediapipe/tasks-vision"
         )
 
-        const vision = await FilesetResolver.forVisionTasks(
-          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
-        )
+        // Suppress benign WASM warnings during initialization
+        // (OpenGL error checking, inference_feedback_manager, etc.)
+        const origWarn = console.warn
+        const origError = console.error
+        console.warn = (...args: unknown[]) => {
+          if (isMediaPipeNoise(args)) return
+          origWarn.apply(console, args)
+        }
+        console.error = (...args: unknown[]) => {
+          if (isMediaPipeNoise(args)) return
+          origError.apply(console, args)
+        }
 
-        const handLandmarker = await HandLandmarker.createFromOptions(vision, {
-          runningMode: "VIDEO",
-          numHands: 1,
-          baseOptions: {
-            modelAssetPath:
-              "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
-          },
-        })
+        let vision: Awaited<ReturnType<typeof FilesetResolver.forVisionTasks>>
+        let handLandmarker: InstanceType<typeof HandLandmarker>
+        try {
+          vision = await FilesetResolver.forVisionTasks(
+            "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+          )
+
+          handLandmarker = await HandLandmarker.createFromOptions(vision, {
+            runningMode: "VIDEO",
+            numHands: 1,
+            baseOptions: {
+              modelAssetPath:
+                "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+              delegate: "GPU",
+            },
+          })
+        } finally {
+          console.warn = origWarn
+          console.error = origError
+        }
 
         if (!cancelled) {
           handLandmarkerRef.current = handLandmarker
