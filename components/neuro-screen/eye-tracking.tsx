@@ -1,0 +1,278 @@
+"use client"
+
+import { useEffect, useRef, useState, useCallback } from "react"
+import { Button } from "@/components/ui/button"
+import { Card } from "@/components/ui/card"
+import { Eye, CheckCircle2, Loader2 } from "lucide-react"
+import { Progress } from "@/components/ui/progress"
+
+const TASK_DURATION = 15 // seconds
+
+interface EyeTrackingProps {
+  videoRef: React.RefObject<HTMLVideoElement | null>
+  cameraOn: boolean
+  onComplete: (data: { smoothness: number; samples: number }) => void
+}
+
+export function EyeTracking({
+  videoRef,
+  cameraOn,
+  onComplete,
+}: EyeTrackingProps) {
+  const [status, setStatus] = useState<
+    "loading" | "ready" | "tracking" | "done"
+  >("loading")
+  const [timeLeft, setTimeLeft] = useState(TASK_DURATION)
+  const [smoothness, setSmoothness] = useState<number | null>(null)
+  const [dotPosition, setDotPosition] = useState({ x: 50, y: 50 })
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+
+  const faceLandmarkerRef = useRef<any>(null)
+  const rafRef = useRef<number | null>(null)
+  const deltasRef = useRef<number[]>([])
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const dotIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Load MediaPipe
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadModel() {
+      try {
+        const { FilesetResolver, FaceLandmarker } = await import(
+          "@mediapipe/tasks-vision"
+        )
+        const vision = await FilesetResolver.forVisionTasks(
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+        )
+        const faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+          runningMode: "VIDEO",
+          numFaces: 1,
+          baseOptions: {
+            modelAssetPath:
+              "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+          },
+        })
+        if (!cancelled) {
+          faceLandmarkerRef.current = faceLandmarker
+          setStatus("ready")
+        }
+      } catch (err) {
+        console.error("Face model load error:", err)
+      }
+    }
+
+    loadModel()
+
+    return () => {
+      cancelled = true
+      if (rafRef.current) cancelAnimationFrame(rafRef.current)
+      if (intervalRef.current) clearInterval(intervalRef.current)
+      if (dotIntervalRef.current) clearInterval(dotIntervalRef.current)
+      faceLandmarkerRef.current?.close()
+    }
+  }, [])
+
+  const computeSmoothness = useCallback((deltas: number[]) => {
+    if (deltas.length < 5) return 100
+    const avg = deltas.reduce((s, d) => s + d, 0) / deltas.length
+    return Math.max(0, Math.min(100, 100 - avg * 5000))
+  }, [])
+
+  const startTracking = useCallback(() => {
+    if (!faceLandmarkerRef.current || !videoRef.current || !cameraOn) return
+
+    setStatus("tracking")
+    deltasRef.current = []
+    setTimeLeft(TASK_DURATION)
+
+    // Moving dot for user to follow
+    dotIntervalRef.current = setInterval(() => {
+      setDotPosition({
+        x: 20 + Math.random() * 60,
+        y: 20 + Math.random() * 60,
+      })
+    }, 2000)
+
+    let prevX: number | null = null
+    let prevY: number | null = null
+    let lastTime = -1
+
+    const processFrame = () => {
+      const video = videoRef.current
+      const landmarker = faceLandmarkerRef.current
+      if (!video || !landmarker || video.readyState < 2) {
+        rafRef.current = requestAnimationFrame(processFrame)
+        return
+      }
+
+      const now = performance.now()
+      if (now === lastTime) {
+        rafRef.current = requestAnimationFrame(processFrame)
+        return
+      }
+      lastTime = now
+
+      try {
+        const results = landmarker.detectForVideo(video, now)
+        if (results?.faceLandmarks?.length > 0) {
+          // Landmark 468 is left iris center, 473 is right iris center
+          const leftIris = results.faceLandmarks[0][468] || results.faceLandmarks[0][33]
+          const rightIris = results.faceLandmarks[0][473] || results.faceLandmarks[0][263]
+          const avgX = (leftIris.x + rightIris.x) / 2
+          const avgY = (leftIris.y + rightIris.y) / 2
+
+          if (prevX !== null && prevY !== null) {
+            const delta = Math.sqrt(
+              (avgX - prevX) ** 2 + (avgY - prevY) ** 2
+            )
+            deltasRef.current.push(delta)
+            const currentSmoothness = computeSmoothness(deltasRef.current)
+            setSmoothness(currentSmoothness)
+          }
+          prevX = avgX
+          prevY = avgY
+
+          // Draw landmarks on canvas
+          if (canvasRef.current) {
+            const ctx = canvasRef.current.getContext("2d")
+            if (ctx) {
+              const w = canvasRef.current.width
+              const h = canvasRef.current.height
+              ctx.clearRect(0, 0, w, h)
+              ctx.fillStyle = "#0ea5e9"
+              results.faceLandmarks[0].forEach(
+                (lm: { x: number; y: number }) => {
+                  ctx.beginPath()
+                  ctx.arc(lm.x * w, lm.y * h, 1, 0, 2 * Math.PI)
+                  ctx.fill()
+                }
+              )
+            }
+          }
+        }
+      } catch {
+        // frame error, continue
+      }
+
+      rafRef.current = requestAnimationFrame(processFrame)
+    }
+
+    rafRef.current = requestAnimationFrame(processFrame)
+
+    intervalRef.current = setInterval(() => {
+      setTimeLeft((prev) => {
+        if (prev <= 1) {
+          if (rafRef.current) cancelAnimationFrame(rafRef.current)
+          if (intervalRef.current) clearInterval(intervalRef.current)
+          if (dotIntervalRef.current) clearInterval(dotIntervalRef.current)
+          const finalSmoothness = computeSmoothness(deltasRef.current)
+          setStatus("done")
+          onComplete({
+            smoothness: Math.round(finalSmoothness * 10) / 10,
+            samples: deltasRef.current.length,
+          })
+          return 0
+        }
+        return prev - 1
+      })
+    }, 1000)
+  }, [videoRef, cameraOn, computeSmoothness, onComplete])
+
+  const elapsed = TASK_DURATION - timeLeft
+  const progress = (elapsed / TASK_DURATION) * 100
+
+  return (
+    <Card className="border-border bg-card p-6">
+      <h2 className="mb-1 text-xl font-semibold text-foreground">
+        Eye Tracking Task
+      </h2>
+      <p className="mb-6 text-sm text-muted-foreground leading-relaxed">
+        Follow the moving dot with your eyes while keeping your head still. The
+        system will track your eye movements for {TASK_DURATION} seconds.
+      </p>
+
+      {status === "loading" && (
+        <div className="flex flex-col items-center gap-3 py-4">
+          <Loader2 className="h-8 w-8 animate-spin text-primary" />
+          <p className="text-sm text-muted-foreground">
+            Loading face tracking model...
+          </p>
+        </div>
+      )}
+
+      {status === "ready" && (
+        <Button
+          className="w-full gap-2"
+          onClick={startTracking}
+          disabled={!cameraOn}
+        >
+          <Eye className="h-4 w-4" />
+          Start Eye Tracking
+        </Button>
+      )}
+
+      {status === "tracking" && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-muted-foreground">Time remaining</span>
+            <span className="font-mono font-semibold text-foreground">
+              {timeLeft}s
+            </span>
+          </div>
+          <Progress value={progress} className="h-2" />
+
+          {/* Moving dot target */}
+          <div className="relative mx-auto aspect-video w-full overflow-hidden rounded-lg bg-secondary">
+            <canvas
+              ref={canvasRef}
+              width={640}
+              height={480}
+              className="absolute inset-0 h-full w-full opacity-50"
+            />
+            <div
+              className="absolute h-5 w-5 rounded-full bg-primary shadow-lg shadow-primary/50 transition-all duration-700 ease-in-out"
+              style={{
+                left: `${dotPosition.x}%`,
+                top: `${dotPosition.y}%`,
+                transform: "translate(-50%, -50%)",
+              }}
+            />
+            <p className="absolute bottom-2 left-0 right-0 text-center text-xs text-muted-foreground">
+              Follow the dot with your eyes
+            </p>
+          </div>
+
+          {smoothness !== null && (
+            <div className="rounded-lg bg-secondary p-4 text-center">
+              <p className="text-xs text-muted-foreground">Smoothness Score</p>
+              <p className="text-3xl font-bold text-foreground">
+                {smoothness.toFixed(1)}
+              </p>
+              <p className="text-xs text-muted-foreground">out of 100</p>
+            </div>
+          )}
+
+          <div className="flex items-center justify-center gap-2">
+            <span className="relative flex h-3 w-3">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-75" />
+              <span className="relative inline-flex h-3 w-3 rounded-full bg-accent" />
+            </span>
+            <span className="text-sm font-medium text-accent">
+              Tracking eyes...
+            </span>
+          </div>
+        </div>
+      )}
+
+      {status === "done" && (
+        <div className="flex flex-col items-center gap-3">
+          <CheckCircle2 className="h-10 w-10 text-accent" />
+          <p className="text-sm font-medium text-foreground">
+            Eye tracking complete! Preparing results...
+          </p>
+        </div>
+      )}
+    </Card>
+  )
+}
