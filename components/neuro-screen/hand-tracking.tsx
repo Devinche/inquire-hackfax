@@ -52,19 +52,42 @@ interface HandTrackingProps {
  */
 function suppressMediaPipeInfo<T>(fn: () => T): T {
   const origError = console.error
+  const origInfo = console.info
+  const origLog = console.log
+  
   console.error = (...args: unknown[]) => {
+    const msg = String(args[0] || '')
     if (
-      typeof args[0] === "string" &&
-      args[0].includes("Created TensorFlow Lite XNNPACK delegate for CPU")
+      msg.includes("Created TensorFlow Lite XNNPACK delegate for CPU") ||
+      msg.includes("INFO:")
     ) {
       return
     }
     origError.apply(console, args)
   }
+  
+  console.info = (...args: unknown[]) => {
+    const msg = String(args[0] || '')
+    if (msg.includes("Created TensorFlow Lite XNNPACK delegate for CPU")) {
+      return
+    }
+    origInfo.apply(console, args)
+  }
+  
+  console.log = (...args: unknown[]) => {
+    const msg = String(args[0] || '')
+    if (msg.includes("Created TensorFlow Lite XNNPACK delegate for CPU")) {
+      return
+    }
+    origLog.apply(console, args)
+  }
+  
   try {
     return fn()
   } finally {
     console.error = origError
+    console.info = origInfo
+    console.log = origLog
   }
 }
 
@@ -435,7 +458,11 @@ export function HandTracking({
       if (rafRef.current) cancelAnimationFrame(rafRef.current)
       if (intervalRef.current) clearInterval(intervalRef.current)
       clearOverlay()
-      handLandmarkerRef.current?.close?.()
+      try {
+        handLandmarkerRef.current?.close()
+      } catch (err) {
+        // Suppress MediaPipe WASM cleanup errors
+      }
     }
   }, [clearOverlay])
 

@@ -101,6 +101,7 @@ export function AssessmentFlow() {
   const [selectedReport, setSelectedReport] = useState<StoredAssessment | null>(
     null
   )
+  const [selectedAssessmentsForDoctor, setSelectedAssessmentsForDoctor] = useState<StoredAssessment[]>([])
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
@@ -145,8 +146,12 @@ export function AssessmentFlow() {
       setCameraOn(true)
     } catch (err) {
       console.error("Cannot access camera:", err)
-      setCameraError("Camera access denied. Please allow camera permissions.")
+      const errorMessage = err instanceof DOMException && err.name === 'NotAllowedError'
+        ? "Camera access denied. Please allow camera permissions and try again."
+        : "Cannot access camera. Please check your camera settings."
+      setCameraError(errorMessage)
       setCameraOn(false)
+      throw err // Re-throw so caller knows it failed
     }
   }, [])
 
@@ -228,8 +233,21 @@ export function AssessmentFlow() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const handleNext = useCallback(() => {
+  const handleNext = useCallback(async () => {
     const next = step + 1
+    
+    // If moving from welcome (0) to first test (1), ensure camera permission
+    if (step === 0 && next === 1) {
+      if (!streamRef.current) {
+        try {
+          await startCamera()
+        } catch (err) {
+          console.error("Failed to start camera:", err)
+          return // Don't proceed if camera fails
+        }
+      }
+    }
+    
     setStep(next)
     
     // Start recording when entering first test (Speech)
@@ -370,7 +388,10 @@ export function AssessmentFlow() {
     setStep(4)
   }, [])
 
-  const handleSendToDoctor = useCallback(() => {
+  const handleSendSelectedToDoctor = useCallback((selectedAssessments: StoredAssessment[]) => {
+    // Store selected assessments and navigate to send-to-doctor page
+    setSelectedAssessmentsForDoctor(selectedAssessments)
+    setView("assessment")
     setStep(6)
   }, [])
 
@@ -496,6 +517,7 @@ export function AssessmentFlow() {
               onViewReport={handleViewReport}
               onDelete={handleDeleteAssessment}
               onNewAssessment={handleRestart}
+              onSendToDoctor={handleSendSelectedToDoctor}
             />
           </div>
         </main>
@@ -625,6 +647,17 @@ export function AssessmentFlow() {
                       three short tasks. Make sure you are in a well-lit environment
                       and ready to begin.
                     </p>
+                    
+                    {cameraError && (
+                      <div className="mb-4 rounded-lg bg-destructive/10 border border-destructive/20 p-3 flex items-start gap-2">
+                        <CameraOff className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
+                        <div className="text-sm">
+                          <p className="font-medium text-destructive mb-1">Camera Access Required</p>
+                          <p className="text-destructive/80 text-xs">{cameraError}</p>
+                        </div>
+                      </div>
+                    )}
+                    
                     <div className="flex flex-col gap-2 text-sm text-muted-foreground">
                       <div className="flex items-center gap-2">
                         <div className="h-1.5 w-1.5 rounded-full bg-primary" />
@@ -642,6 +675,7 @@ export function AssessmentFlow() {
                     <Button
                       className="mt-6 w-full"
                       onClick={handleNext}
+                      disabled={!!cameraError}
                     >
                       Begin Assessment
                     </Button>
@@ -684,7 +718,7 @@ export function AssessmentFlow() {
                     allHistory={history}
                     onRestart={handleRestart}
                     onViewHistory={() => setView("history")}
-                    onSendToDoctor={handleSendToDoctor}
+                    onSendToDoctor={() => setStep(6)}
                     onBack={handleBackToResults}
                   />
                 </div>
@@ -695,7 +729,11 @@ export function AssessmentFlow() {
                   <SendToDoctor
                     results={selectedReport?.results ?? results}
                     allHistory={history}
-                    onBack={() => setStep(5)}
+                    onBack={() => {
+                      setSelectedAssessmentsForDoctor([])
+                      setStep(5)
+                    }}
+                    selectedAssessments={selectedAssessmentsForDoctor.length > 0 ? selectedAssessmentsForDoctor : undefined}
                   />
                 </div>
               )}

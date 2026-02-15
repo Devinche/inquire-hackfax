@@ -1,8 +1,9 @@
 "use client"
 
-import { useMemo } from "react"
+import { useMemo, useState } from "react"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   LineChart,
   Line,
@@ -21,6 +22,9 @@ import {
   Minus,
   Calendar,
   BarChart3,
+  Send,
+  CheckSquare,
+  Square,
 } from "lucide-react"
 import type { StoredAssessment } from "./assessment-flow"
 
@@ -29,6 +33,7 @@ interface AssessmentHistoryProps {
   onViewReport: (assessment: StoredAssessment) => void
   onDelete: (id: string) => void
   onNewAssessment: () => void
+  onSendToDoctor?: (selectedAssessments: StoredAssessment[]) => void
 }
 
 function computeScores(assessment: StoredAssessment) {
@@ -73,7 +78,35 @@ export function AssessmentHistory({
   onViewReport,
   onDelete,
   onNewAssessment,
+  onSendToDoctor,
 }: AssessmentHistoryProps) {
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  
+  const toggleSelection = (id: string) => {
+    const newSelected = new Set(selectedIds)
+    if (newSelected.has(id)) {
+      newSelected.delete(id)
+    } else {
+      newSelected.add(id)
+    }
+    setSelectedIds(newSelected)
+  }
+  
+  const toggleSelectAll = () => {
+    if (selectedIds.size === history.length) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(history.map(a => a.id)))
+    }
+  }
+  
+  const handleSendToDoctor = () => {
+    if (onSendToDoctor && selectedIds.size > 0) {
+      const selected = history.filter(a => selectedIds.has(a.id))
+      onSendToDoctor(selected)
+    }
+  }
+  
   // Compute statistics across all attempts
   const stats = useMemo(() => {
     if (history.length === 0) return null
@@ -147,12 +180,29 @@ export function AssessmentHistory({
           <p className="text-sm text-muted-foreground">
             {history.length} assessment{history.length !== 1 ? "s" : ""}{" "}
             recorded
+            {selectedIds.size > 0 && (
+              <span className="ml-2 text-primary">
+                • {selectedIds.size} selected
+              </span>
+            )}
           </p>
         </div>
-        <Button className="gap-2" onClick={onNewAssessment}>
-          <Plus className="h-4 w-4" />
-          New Assessment
-        </Button>
+        <div className="flex items-center gap-2">
+          {selectedIds.size > 0 && onSendToDoctor && (
+            <Button 
+              variant="default" 
+              className="gap-2"
+              onClick={handleSendToDoctor}
+            >
+              <Send className="h-4 w-4" />
+              Send to Doctor ({selectedIds.size})
+            </Button>
+          )}
+          <Button className="gap-2" onClick={onNewAssessment}>
+            <Plus className="h-4 w-4" />
+            New Assessment
+          </Button>
+        </div>
       </div>
 
       {/* Aggregate statistics */}
@@ -320,19 +370,55 @@ export function AssessmentHistory({
 
       {/* Assessment list */}
       <div className="space-y-3">
-        <h3 className="text-sm font-semibold text-foreground">
-          Past Assessments
-        </h3>
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-foreground">
+            Past Assessments
+          </h3>
+          {history.length > 1 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-2 text-xs"
+              onClick={toggleSelectAll}
+            >
+              {selectedIds.size === history.length ? (
+                <>
+                  <CheckSquare className="h-3.5 w-3.5" />
+                  Deselect All
+                </>
+              ) : (
+                <>
+                  <Square className="h-3.5 w-3.5" />
+                  Select All
+                </>
+              )}
+            </Button>
+          )}
+        </div>
         {history.map((assessment, idx) => {
           const scores = computeScores(assessment)
           const prev = idx < history.length - 1 ? computeScores(history[idx + 1]) : null
+          const isSelected = selectedIds.has(assessment.id)
 
           return (
             <Card
               key={assessment.id}
-              className="border-border bg-card p-4 transition-colors hover:bg-secondary/50"
+              className={`border-border bg-card p-4 transition-all ${
+                isSelected 
+                  ? 'ring-2 ring-primary bg-primary/5' 
+                  : 'hover:bg-secondary/50'
+              }`}
             >
               <div className="flex items-center gap-4">
+                {/* Checkbox */}
+                <div className="flex items-center">
+                  <Checkbox
+                    checked={isSelected}
+                    onCheckedChange={() => toggleSelection(assessment.id)}
+                    className="h-5 w-5"
+                  />
+                </div>
+
                 {/* Overall score circle */}
                 <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full border-2 border-primary bg-secondary">
                   <div className="text-center">

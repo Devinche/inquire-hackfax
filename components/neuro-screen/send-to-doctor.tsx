@@ -20,6 +20,7 @@ interface SendToDoctorProps {
   allHistory: StoredAssessment[]
   timestamp?: number
   onBack: () => void
+  selectedAssessments?: StoredAssessment[]
 }
 
 export function SendToDoctor({
@@ -27,6 +28,7 @@ export function SendToDoctor({
   allHistory,
   timestamp,
   onBack,
+  selectedAssessments,
 }: SendToDoctorProps) {
   const [patientName, setPatientName] = useState("")
   const [patientDOB, setPatientDOB] = useState("")
@@ -34,29 +36,39 @@ export function SendToDoctor({
   const [notes, setNotes] = useState("")
   const [generating, setGenerating] = useState(false)
   const [generated, setGenerated] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-  // Find the current assessment from history or create a temporary one
-  const currentAssessment: StoredAssessment = allHistory.length > 0
-    ? allHistory[0]
-    : {
+  // Use selected assessments if provided, otherwise use current assessment
+  const assessmentsToSend: StoredAssessment[] = selectedAssessments && selectedAssessments.length > 0
+    ? selectedAssessments
+    : allHistory.length > 0
+    ? [allHistory[0]]
+    : [{
         id: crypto.randomUUID(),
         timestamp: timestamp ?? Date.now(),
         results,
-      }
+      }]
+  
+  console.log("SendToDoctor - selectedAssessments:", selectedAssessments)
+  console.log("SendToDoctor - assessmentsToSend:", assessmentsToSend.length, "assessment(s)")
 
   const handleGenerate = async () => {
     setGenerating(true)
+    setError(null)
     try {
+      console.log("Generating PDF for", assessmentsToSend.length, "assessment(s)")
       await generateMedicalPDF(
-        [currentAssessment],
+        assessmentsToSend,
         patientName || undefined,
         patientDOB || undefined,
         doctorName || undefined,
         notes || undefined
       )
       setGenerated(true)
+      console.log("PDF generation completed successfully")
     } catch (err) {
       console.error("PDF generation error:", err)
+      setError(err instanceof Error ? err.message : "Failed to generate PDF. Please try again.")
     } finally {
       setGenerating(false)
     }
@@ -86,9 +98,8 @@ export function SendToDoctor({
           Send to Doctor
         </h2>
         <p className="mt-2 max-w-md text-sm text-muted-foreground leading-relaxed">
-          Generate a professional medical PDF report of your most recent
-          assessment results. Fill in the optional fields below for a more
-          complete report.
+          Generate a professional medical PDF report of {assessmentsToSend.length === 1 ? 'your assessment' : `${assessmentsToSend.length} assessments`}.
+          Fill in the optional fields below for a more complete report.
         </p>
       </div>
 
@@ -173,6 +184,14 @@ export function SendToDoctor({
               PDF has been downloaded. You can print it or email it to your
               doctor.
             </p>
+          )}
+
+          {error && (
+            <div className="rounded-lg bg-destructive/10 border border-destructive/20 p-3">
+              <p className="text-sm text-destructive font-medium">
+                {error}
+              </p>
+            </div>
           )}
         </div>
       </Card>

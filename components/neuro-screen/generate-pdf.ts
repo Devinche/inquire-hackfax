@@ -1,4 +1,5 @@
 import type { AssessmentResults, StoredAssessment } from "./assessment-flow"
+import { jsPDF } from "jspdf"
 
 function computeScoresFromResults(results: AssessmentResults) {
   const matchingWordCount = results.speech
@@ -61,8 +62,11 @@ export async function generateMedicalPDF(
   doctorName?: string,
   notes?: string
 ) {
-  const { jsPDF } = await import("jspdf")
-  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" })
+  try {
+    console.log("Starting PDF generation for", assessments.length, "assessment(s)...")
+    console.log("Creating jsPDF instance...")
+    const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" })
+    console.log("jsPDF instance created successfully")
   const pageWidth = doc.internal.pageSize.getWidth()
   const margin = 20
   const contentWidth = pageWidth - margin * 2
@@ -386,5 +390,12 @@ export async function generateMedicalPDF(
   // Save
   const dateStr = new Date().toISOString().split("T")[0]
   const name = patientName?.replace(/\s+/g, "_") || "patient"
-  doc.save(`Inquire_Assessment_${name}_${dateStr}.pdf`)
+  const filename = `Inquire_Assessment_${name}_${dateStr}.pdf`
+  console.log("Saving PDF as:", filename)
+  doc.save(filename)
+  console.log("PDF saved successfully")
+  } catch (error) {
+    console.error("Error generating PDF:", error)
+    throw error
+  }
 }
