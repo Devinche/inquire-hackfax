@@ -24,6 +24,7 @@ export function SpeechTask({ onComplete, onSkip }: SpeechTaskProps) {
   const [capturedWords, setCapturedWords] = useState<string[]>([])
   const [liveTranscript, setLiveTranscript] = useState("")
   const [restartCount, setRestartCount] = useState(0)
+  const [error, setError] = useState<string | null>(null)
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const startTimeRef = useRef<number>(0)
@@ -95,26 +96,14 @@ export function SpeechTask({ onComplete, onSkip }: SpeechTaskProps) {
     wordCountsRef.current = {}
     setCapturedWords([])
     setLiveTranscript("")
+    setError(null)
 
     const SpeechRecognition =
       (window as any).SpeechRecognition ||
       (window as any).webkitSpeechRecognition
 
     if (!SpeechRecognition) {
-      setStatus("recording")
-      startTimeRef.current = Date.now()
-      setTimeLeft(MAX_DURATION)
-
-      intervalRef.current = setInterval(() => {
-        const elapsed = Math.floor(
-          (Date.now() - startTimeRef.current) / 1000
-        )
-        const remaining = Math.max(0, MAX_DURATION - elapsed)
-        setTimeLeft(remaining)
-        if (remaining <= 0) {
-          finishRecording()
-        }
-      }, 250)
+      setError("Speech recognition is not supported in this browser. Please use Chrome, Edge, or Safari.")
       return
     }
 
@@ -185,6 +174,19 @@ export function SpeechTask({ onComplete, onSkip }: SpeechTaskProps) {
       }, 250)
     } catch (err) {
       console.error("Microphone error:", err)
+      if (err instanceof Error) {
+        if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+          setError("Microphone access denied. Please allow microphone permissions in your browser settings.")
+        } else if (err.name === "NotFoundError") {
+          setError("No microphone found. Please connect a microphone and try again.")
+        } else if (err.name === "NotSupportedError") {
+          setError("Microphone access requires HTTPS. Please use a secure connection.")
+        } else {
+          setError(`Microphone error: ${err.message}`)
+        }
+      } else {
+        setError("Failed to access microphone. Please check your browser permissions.")
+      }
     }
   }, [finishRecording])
 
@@ -246,6 +248,13 @@ export function SpeechTask({ onComplete, onSkip }: SpeechTaskProps) {
 
       {status === "idle" && (
         <div className="space-y-3">
+          {error && (
+            <div className="rounded-lg bg-destructive/10 border border-destructive/20 p-3">
+              <p className="text-sm text-destructive font-medium">
+                {error}
+              </p>
+            </div>
+          )}
           <Button className="w-full gap-2" onClick={startRecording}>
             <Mic className="h-4 w-4" />
             {restartCount > 0 ? "Start Again" : "Start Recording"}

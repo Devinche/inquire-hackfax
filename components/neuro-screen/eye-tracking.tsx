@@ -453,7 +453,7 @@ export function EyeTracking({
         <h2 className="text-xl font-semibold text-foreground">
           Eye Tracking Task
         </h2>
-        {status === "idle" || status === "ready" ? (
+        {status === "ready" ? (
           <Button
             variant="ghost"
             size="sm"
