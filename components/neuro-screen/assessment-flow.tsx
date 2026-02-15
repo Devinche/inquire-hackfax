@@ -754,6 +754,7 @@ export function AssessmentFlow({ userEmail, userRole, onLogout }: AssessmentFlow
                     cameraOn={cameraOn}
                     onComplete={handleEyeComplete}
                     onSkip={handleSkipEye}
+                    userRole={userRole}
                   />
                 )}
               </div>
