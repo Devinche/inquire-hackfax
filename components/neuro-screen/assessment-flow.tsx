@@ -11,12 +11,11 @@ import { Card } from "@/components/ui/card"
 import { PostResultsActions } from "./post-results-actions"
 import { SendToDoctor } from "./send-to-doctor"
 import {
-  Camera,
-  CameraOff,
   Activity,
   Brain,
   History,
   ChevronLeft,
+  CameraOff,
 } from "lucide-react"
 
 export interface SpeechData {
@@ -53,6 +52,7 @@ export interface AssessmentResults {
   speech: SpeechData | null
   hand: HandData | null
   eye: EyeData | null
+  recordingUrl?: string // Blob URL of the video recording
 }
 
 export interface StoredAssessment {
@@ -94,6 +94,7 @@ export function AssessmentFlow() {
     speech: null,
     hand: null,
     eye: null,
+    recordingUrl: undefined,
   })
   const [view, setView] = useState<"assessment" | "history">("assessment")
   const [history, setHistory] = useState<StoredAssessment[]>([])
@@ -103,6 +104,8 @@ export function AssessmentFlow() {
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const recordedChunksRef = useRef<Blob[]>([])
 
   // Load history on mount
   useEffect(() => {
@@ -110,6 +113,12 @@ export function AssessmentFlow() {
   }, [])
 
   const startCamera = useCallback(async () => {
+    // Prevent multiple simultaneous camera starts
+    if (streamRef.current) {
+      setCameraOn(true)
+      return
+    }
+    
     try {
       setCameraError(null)
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -117,10 +126,19 @@ export function AssessmentFlow() {
         audio: false,
       })
       streamRef.current = stream
+      
+      // Attach stream to video element if it exists
       if (videoRef.current) {
         videoRef.current.srcObject = stream
-        await videoRef.current.play()
+        videoRef.current.onloadedmetadata = () => {
+          videoRef.current?.play().catch((playError) => {
+            if (playError instanceof Error && !playError.message.includes('interrupted')) {
+              console.error("Video play error:", playError)
+            }
+          })
+        }
       }
+      
       setCameraOn(true)
     } catch (err) {
       console.error("Cannot access camera:", err)
@@ -140,13 +158,56 @@ export function AssessmentFlow() {
     setCameraOn(false)
   }, [])
 
-  const toggleCamera = useCallback(() => {
-    if (cameraOn) {
-      stopCamera()
-    } else {
-      startCamera()
+  const startRecording = useCallback(() => {
+    if (!streamRef.current) return
+    
+    try {
+      recordedChunksRef.current = []
+      
+      // Try different codecs in order of preference
+      let mimeType = 'video/webm;codecs=vp9'
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        mimeType = 'video/webm;codecs=vp8'
+      }
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        mimeType = 'video/webm'
+      }
+      
+      const mediaRecorder = new MediaRecorder(streamRef.current, { mimeType })
+      
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          recordedChunksRef.current.push(event.data)
+        }
+      }
+      
+      mediaRecorder.start(100) // Collect data every 100ms
+      mediaRecorderRef.current = mediaRecorder
+    } catch (err) {
+      console.error("Failed to start recording:", err)
     }
-  }, [cameraOn, startCamera, stopCamera])
+  }, [])
+
+  const stopRecording = useCallback(() => {
+    return new Promise<string | undefined>((resolve) => {
+      if (!mediaRecorderRef.current) {
+        resolve(undefined)
+        return
+      }
+      
+      const recorder = mediaRecorderRef.current
+      
+      recorder.onstop = () => {
+        const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' })
+        const url = URL.createObjectURL(blob)
+        mediaRecorderRef.current = null
+        recordedChunksRef.current = []
+        resolve(url)
+      }
+      
+      recorder.stop()
+    })
+  }, [])
 
   useEffect(() => {
     startCamera()
@@ -157,24 +218,48 @@ export function AssessmentFlow() {
   }, [])
 
   const handleNext = useCallback(() => {
-    setStep((prev) => {
-      const next = prev + 1
-      if (!cameraOn && next >= 1 && next <= 3) {
-        startCamera()
-      }
-      return next
-    })
-  }, [cameraOn, startCamera])
+    const next = step + 1
+    setStep(next)
+    
+    // Start recording when entering first test (Speech)
+    if (next === 1) {
+      setTimeout(() => {
+        startRecording()
+      }, 500)
+    }
+    
+    // Force camera on when entering test steps
+    if (next >= 1 && next <= 3) {
+      // Use setTimeout to ensure state has updated
+      setTimeout(() => {
+        if (!streamRef.current) {
+          startCamera()
+        } else if (videoRef.current && videoRef.current.srcObject !== streamRef.current) {
+          videoRef.current.srcObject = streamRef.current
+          videoRef.current.play().catch(() => {})
+        }
+      }, 100)
+    }
+  }, [step, startCamera, startRecording])
 
   // Ensure camera is on when advancing to any test step
   const advanceToStep = useCallback(
     (nextStep: number) => {
       setStep(nextStep)
-      if (!cameraOn && nextStep >= 1 && nextStep <= 3) {
-        startCamera()
+      
+      // Force camera on when entering test steps
+      if (nextStep >= 1 && nextStep <= 3) {
+        setTimeout(() => {
+          if (!streamRef.current) {
+            startCamera()
+          } else if (videoRef.current && videoRef.current.srcObject !== streamRef.current) {
+            videoRef.current.srcObject = streamRef.current
+            videoRef.current.play().catch(() => {})
+          }
+        }, 100)
       }
     },
-    [cameraOn, startCamera]
+    [startCamera]
   )
 
   const handleSpeechComplete = useCallback(
@@ -194,10 +279,13 @@ export function AssessmentFlow() {
   )
 
   const handleEyeComplete = useCallback(
-    (data: EyeData) => {
-      setResults((prev) => ({ ...prev, eye: data }))
+    async (data: EyeData) => {
+      // Stop recording and get the video URL
+      const recordingUrl = await stopRecording()
+      
+      setResults((prev) => ({ ...prev, eye: data, recordingUrl }))
       // Save to history when all tasks done
-      const finalResults = { ...results, eye: data }
+      const finalResults = { ...results, eye: data, recordingUrl }
       const assessment: StoredAssessment = {
         id: crypto.randomUUID(),
         timestamp: Date.now(),
@@ -208,7 +296,7 @@ export function AssessmentFlow() {
       saveHistory(newHistory)
       advanceToStep(4)
     },
-    [advanceToStep, results, history]
+    [advanceToStep, results, history, stopRecording]
   )
 
   // Skip handlers: produce data with wasSkipped=true
@@ -249,14 +337,19 @@ export function AssessmentFlow() {
   }, [handleEyeComplete])
 
   const handleRestart = useCallback(() => {
+    // Clean up old recording URL
+    if (results.recordingUrl) {
+      URL.revokeObjectURL(results.recordingUrl)
+    }
+    
     setStep(0)
-    setResults({ speech: null, hand: null, eye: null })
+    setResults({ speech: null, hand: null, eye: null, recordingUrl: undefined })
     setView("assessment")
     setSelectedReport(null)
     if (!cameraOn) {
       startCamera()
     }
-  }, [cameraOn, startCamera])
+  }, [cameraOn, startCamera, results.recordingUrl])
 
   const handleContinueFromResults = useCallback(() => {
     setStep(5)
@@ -295,7 +388,7 @@ export function AssessmentFlow() {
   // Also poll cameraOn so if camera drops mid-test it restarts
   useEffect(() => {
     if (view === "assessment" && step >= 1 && step <= 3) {
-      if (!cameraOn) {
+      if (!cameraOn && !streamRef.current) {
         startCamera()
       }
     }
@@ -304,6 +397,20 @@ export function AssessmentFlow() {
       stopCamera()
     }
   }, [step, view, cameraOn, startCamera, stopCamera])
+
+  // Ensure video element has the stream when it mounts or step changes
+  useEffect(() => {
+    if (videoRef.current && streamRef.current && step >= 1 && step <= 3) {
+      if (videoRef.current.srcObject !== streamRef.current) {
+        videoRef.current.srcObject = streamRef.current
+        videoRef.current.play().catch((err) => {
+          if (!err.message?.includes('interrupted')) {
+            console.error("Video play error:", err)
+          }
+        })
+      }
+    }
+  }, [step])
 
   // Only show camera panel for active test steps, not results
   const showCamera = step >= 1 && step <= 3 && view === "assessment"
@@ -372,34 +479,12 @@ export function AssessmentFlow() {
               History ({history.length})
             </span>
           </Button>
-
-          {/* Camera toggle */}
-          {view === "assessment" && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={toggleCamera}
-              className="gap-2"
-            >
-              {cameraOn ? (
-                <>
-                  <Camera className="h-4 w-4" />
-                  <span className="hidden sm:inline">Camera On</span>
-                </>
-              ) : (
-                <>
-                  <CameraOff className="h-4 w-4" />
-                  <span className="hidden sm:inline">Camera Off</span>
-                </>
-              )}
-            </Button>
-          )}
         </div>
       </header>
 
       {/* History view */}
       {view === "history" && (
-        <main className="flex flex-1 flex-col items-center p-4 sm:p-6">
+        <main className="flex flex-1 flex-col items-center p-4 sm:p-6 animate-in fade-in duration-500">
           <div className="w-full max-w-4xl">
             <AssessmentHistory
               history={history}
@@ -418,7 +503,7 @@ export function AssessmentFlow() {
           {showCamera ? (
             <div className="flex w-full max-w-5xl flex-col gap-4 lg:flex-row">
               {/* Camera */}
-              <div className="w-full shrink-0 lg:w-[360px]">
+              <div className="w-full shrink-0 lg:w-[360px] animate-in fade-in slide-in-from-left-8 duration-500">
                 <Card className="sticky top-4 overflow-hidden border-border bg-card">
                   <div className="relative aspect-[4/3] w-full bg-secondary">
                     <video
@@ -461,7 +546,7 @@ export function AssessmentFlow() {
               </div>
 
               {/* Task content */}
-              <div className="flex-1">
+              <div className="flex-1 animate-in fade-in slide-in-from-right-8 duration-500">
                 {step === 1 && (
                   <SpeechTask
                     onComplete={handleSpeechComplete}
@@ -499,43 +584,31 @@ export function AssessmentFlow() {
 
               {step === 0 && (
                 <div className="flex flex-col items-center gap-6">
-                  {/* Camera preview for welcome */}
-                  <Card className="w-full max-w-[480px] overflow-hidden border-border bg-card">
-                    <div className="relative aspect-[4/3] w-full bg-secondary">
-                      <video
-                        autoPlay
-                        playsInline
-                        muted
-                        className="h-full w-full object-cover"
-                        style={{ transform: "scaleX(-1)" }}
-                        ref={(el) => {
-                          if (el && streamRef.current) {
-                            el.srcObject = streamRef.current
-                          }
-                        }}
-                      />
-                      {!cameraOn && (
-                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-secondary">
-                          <CameraOff className="h-12 w-12 text-muted-foreground" />
-                          <p className="text-sm text-muted-foreground">
-                            Camera is off
-                          </p>
-                          <Button size="sm" onClick={startCamera}>
-                            Turn On Camera
-                          </Button>
-                        </div>
-                      )}
+                  {/* Smooth animations for all components */}
+                  <div className="flex flex-col items-center gap-4 py-12 animate-in fade-in slide-in-from-bottom-8 duration-1000 delay-100">
+                    <div className="relative">
+                      <div className="absolute inset-0 rounded-full bg-primary/10 animate-pulse" style={{ animationDuration: '3s' }} />
+                      <div className="relative flex h-24 w-24 items-center justify-center rounded-full bg-primary shadow-lg">
+                        <Brain className="h-12 w-12 text-primary-foreground" />
+                      </div>
                     </div>
-                  </Card>
+                    <h1 className="text-4xl font-bold text-foreground">
+                      Inquire
+                    </h1>
+                    <p className="text-lg text-muted-foreground">
+                      Cognitive Assessment Tool
+                    </p>
+                  </div>
 
-                  <Card className="w-full max-w-[480px] border-border bg-card p-6">
+                  {/* Smooth animation for welcome card */}
+                  <Card className="w-full max-w-[480px] border-border bg-card p-6 animate-in slide-in-from-bottom-12 fade-in duration-1000 delay-[1600ms]">
                     <h2 className="mb-2 text-xl font-semibold text-foreground text-balance">
-                      Welcome to Inquire
+                      Welcome to Your Assessment
                     </h2>
                     <p className="mb-4 text-sm text-muted-foreground leading-relaxed">
                       This tool performs a quick cognitive screening through
-                      three short tasks. Make sure your camera is on and you are
-                      in a well-lit environment.
+                      three short tasks. Make sure you are in a well-lit environment
+                      and ready to begin.
                     </p>
                     <div className="flex flex-col gap-2 text-sm text-muted-foreground">
                       <div className="flex items-center gap-2">
@@ -554,7 +627,6 @@ export function AssessmentFlow() {
                     <Button
                       className="mt-6 w-full"
                       onClick={handleNext}
-                      disabled={!cameraOn}
                     >
                       Begin Assessment
                     </Button>
@@ -563,7 +635,7 @@ export function AssessmentFlow() {
               )}
 
               {step === 4 && (
-                <div>
+                <div className="animate-in fade-in slide-in-from-bottom-8 duration-700">
                   {selectedReport ? (
                     <div className="mb-4">
                       <Button
@@ -591,22 +663,26 @@ export function AssessmentFlow() {
               )}
 
               {step === 5 && (
-                <PostResultsActions
-                  results={selectedReport?.results ?? results}
-                  allHistory={history}
-                  onRestart={handleRestart}
-                  onViewHistory={() => setView("history")}
-                  onSendToDoctor={handleSendToDoctor}
-                  onBack={handleBackToResults}
-                />
+                <div className="animate-in fade-in slide-in-from-bottom-8 duration-700">
+                  <PostResultsActions
+                    results={selectedReport?.results ?? results}
+                    allHistory={history}
+                    onRestart={handleRestart}
+                    onViewHistory={() => setView("history")}
+                    onSendToDoctor={handleSendToDoctor}
+                    onBack={handleBackToResults}
+                  />
+                </div>
               )}
 
               {step === 6 && (
-                <SendToDoctor
-                  results={selectedReport?.results ?? results}
-                  allHistory={history}
-                  onBack={() => setStep(5)}
-                />
+                <div className="animate-in fade-in slide-in-from-bottom-8 duration-700">
+                  <SendToDoctor
+                    results={selectedReport?.results ?? results}
+                    allHistory={history}
+                    onBack={() => setStep(5)}
+                  />
+                </div>
               )}
             </div>
           )}

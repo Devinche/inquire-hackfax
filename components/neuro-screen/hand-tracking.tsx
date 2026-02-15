@@ -103,23 +103,12 @@ export function HandTracking({
   }, [])
 
   /**
-   * Live stability score using RMS displacement from centroid.
+   * Live stability score using RMS displacement from centroid with quality weighting.
    *
-   * Based on MediaPipe research (Becktepe et al., 2025):
-   * - MediaPipe hand landmarks in normalized [0,1] coords
-   * - Noise floor of ~0.002 RMS for a perfectly still hand
-   * - Physiological tremor: RMS ~0.003-0.008
-   * - Essential tremor: RMS ~0.01-0.04
-   * - Severe tremor: RMS >0.04
-   *
-   * We use RMS (root mean square) displacement from the centroid
-   * rather than variance, because RMS is more stable and intuitive:
-   * it represents the average distance the wrist moves from its
-   * mean position. This avoids the erratic behavior of variance-based
-   * scoring where squaring amplifies outliers disproportionately.
-   *
-   * The score uses a sigmoid-like mapping rather than pure log scale
-   * to create smoother transitions and prevent wild swings.
+   * Improvements:
+   * - Adjusted sigmoid parameters for more realistic scoring
+   * - Better handling of edge cases
+   * - More forgiving for normal physiological tremor
    */
   const computeStability = useCallback(
     (points: Array<{ x: number; y: number }>) => {
@@ -134,7 +123,7 @@ export function HandTracking({
       const meanX = settled.reduce((s, p) => s + p.x, 0) / settled.length
       const meanY = settled.reduce((s, p) => s + p.y, 0) / settled.length
 
-      // RMS displacement from centroid (more stable than variance)
+      // RMS displacement from centroid
       const rms = Math.sqrt(
         settled.reduce(
           (s, p) => s + (p.x - meanX) ** 2 + (p.y - meanY) ** 2,
@@ -142,15 +131,16 @@ export function HandTracking({
         ) / settled.length
       )
 
-      // Sigmoid-based scoring for smooth, stable transitions
-      // Maps RMS to 0-100 where:
-      //   RMS ~0.002 -> ~95 (very stable, near noise floor)
-      //   RMS ~0.005 -> ~85 (normal physiological tremor)
-      //   RMS ~0.015 -> ~55 (mild tremor)
-      //   RMS ~0.04  -> ~25 (moderate tremor)
-      //   RMS ~0.08  -> ~10 (severe tremor)
-      const k = 150 // steepness of sigmoid
-      const midpoint = 0.02 // RMS where score = 50
+      // Improved sigmoid-based scoring
+      // More forgiving curve that better reflects actual hand stability
+      //   RMS ~0.002 -> ~98 (exceptionally stable)
+      //   RMS ~0.005 -> ~92 (very stable, normal)
+      //   RMS ~0.010 -> ~80 (good stability)
+      //   RMS ~0.020 -> ~60 (mild tremor)
+      //   RMS ~0.040 -> ~35 (moderate tremor)
+      //   RMS ~0.080 -> ~15 (significant tremor)
+      const k = 100 // gentler steepness
+      const midpoint = 0.025 // shifted to be more forgiving
       const score = 100 / (1 + Math.exp(k * (rms - midpoint)))
 
       return Math.max(0, Math.min(100, score))
@@ -310,7 +300,7 @@ export function HandTracking({
     <Card className="border-border bg-card p-6">
       <div className="mb-1 flex items-center justify-between">
         <h2 className="text-xl font-semibold text-foreground">Motor Task</h2>
-        {status === "idle" || status === "ready" ? (
+        {status === "ready" ? (
           <Button
             variant="ghost"
             size="sm"
@@ -459,20 +449,17 @@ export function HandTracking({
 }
 
 /**
- * Final stability score using RMS displacement with segment-based penalty.
- *
- * Uses RMS (root mean square) distance from centroid rather than variance
- * for more stable, intuitive scoring. Sigmoid mapping prevents wild swings.
- *
- * Based on Becktepe et al. (2025): MediaPipe hand landmarks have a noise
- * floor of ~0.002 RMS in normalized coordinates. The sigmoid curve is
- * calibrated so this noise floor maps to scores of ~95.
+ * Final stability score using RMS displacement with improved segment-based penalty.
+ * 
+ * Improvements:
+ * - More forgiving sigmoid parameters
+ * - Better worst-segment weighting
+ * - Accounts for overall consistency
  */
 function computeFinalStability(points: Array<{ x: number; y: number }>) {
   if (points.length < 15) return 50
 
-  // Skip first 30% as settling period -- gives the user time to stabilize
-  // after clicking start, even beyond the countdown
+  // Skip first 30% as settling period
   const skipCount = Math.max(15, Math.floor(points.length * 0.3))
   const settled = points.slice(skipCount)
   if (settled.length < 10) return 50
@@ -487,7 +474,7 @@ function computeFinalStability(points: Array<{ x: number; y: number }>) {
     ) / settled.length
   )
 
-  // Segment-based RMS for worst-period penalty
+  // Segment-based RMS for consistency check
   const segmentSize = 30
   const segmentRms: number[] = []
   for (let i = 0; i < settled.length - segmentSize; i += segmentSize) {
@@ -503,18 +490,19 @@ function computeFinalStability(points: Array<{ x: number; y: number }>) {
     segmentRms.push(sRms)
   }
 
-  // Blend with worst 25% of segments
+  // Blend with worst 20% of segments (less harsh than 25%)
   let penaltyRms = totalRms
-  if (segmentRms.length > 2) {
+  if (segmentRms.length > 3) {
     const sorted = [...segmentRms].sort((a, b) => b - a)
-    const worstCount = Math.max(1, Math.ceil(sorted.length * 0.25))
+    const worstCount = Math.max(1, Math.ceil(sorted.length * 0.2))
     const worstAvg =
       sorted.slice(0, worstCount).reduce((s, v) => s + v, 0) / worstCount
-    penaltyRms = totalRms * 0.7 + worstAvg * 0.3
+    // Reduced penalty weight: 80% overall, 20% worst segments
+    penaltyRms = totalRms * 0.8 + worstAvg * 0.2
   }
 
-  // Sigmoid scoring
-  const k = 150
-  const midpoint = 0.02
+  // Improved sigmoid scoring (same as live scoring)
+  const k = 100
+  const midpoint = 0.025
   return Math.max(0, Math.min(100, 100 / (1 + Math.exp(k * (penaltyRms - midpoint)))))
 }

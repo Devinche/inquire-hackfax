@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import { RecordingViewer } from "./recording-viewer"
 import {
   RadarChart,
   PolarGrid,
@@ -40,6 +41,7 @@ import {
   SkipForward,
   Repeat,
   ArrowRight,
+  Video,
 } from "lucide-react"
 import type { AssessmentResults, StoredAssessment } from "./assessment-flow"
 
@@ -328,6 +330,8 @@ export function ResultsDashboard({
   onViewHistory,
   allHistory,
 }: ResultsDashboardProps) {
+  const [showRecording, setShowRecording] = useState(false)
+  
   const speechWordCount = results.speech?.words?.length ?? 0
   const matchingWordCount = results.speech
     ? results.speech.words.filter((w) =>
@@ -437,52 +441,59 @@ export function ResultsDashboard({
   }, [allHistory])
 
   return (
-    <div className="space-y-6">
-      {/* Overall score */}
-      <Card className="border-border bg-card p-6">
-        <div className="mb-4 flex items-center gap-3">
-          <Activity className="h-5 w-5 text-primary" />
-          <h2 className="text-xl font-semibold text-foreground">
+    <div className="space-y-6 animate-in fade-in duration-700">
+      {/* Overall score - Enhanced */}
+      <Card className="border-border bg-gradient-to-br from-primary/5 via-card to-accent/5 p-8 shadow-xl">
+        <div className="mb-6 flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary shadow-lg">
+            <Activity className="h-6 w-6 text-primary-foreground" />
+          </div>
+          <h2 className="text-2xl font-bold text-foreground">
             Assessment Results
           </h2>
         </div>
 
-        <div className="flex flex-col items-center gap-2 py-4">
-          <div className="flex h-28 w-28 items-center justify-center rounded-full border-4 border-primary bg-secondary">
-            <div className="text-center">
-              <p className="text-3xl font-bold text-foreground">
-                {overallScore}
-              </p>
-              <p className="text-xs text-muted-foreground">Overall</p>
+        <div className="flex flex-col items-center gap-4 py-6">
+          <div className="relative">
+            <div className="absolute inset-0 animate-pulse rounded-full bg-primary/20" style={{ animationDuration: '3s' }} />
+            <div className="relative flex h-32 w-32 items-center justify-center rounded-full border-4 border-primary bg-gradient-to-br from-secondary to-card shadow-lg">
+              <div className="text-center">
+                <p className="text-4xl font-bold text-foreground">
+                  {overallScore}
+                </p>
+                <p className="text-xs font-semibold text-muted-foreground">Overall</p>
+              </div>
             </div>
           </div>
-          <p className={`text-sm font-semibold ${overall.color}`}>
-            {overall.text}
-          </p>
-          {anySkipped && (
-            <p className="text-xs text-yellow-500">
-              Some tests were skipped -- overall score based on completed tests only
+          <div className="text-center">
+            <p className={`text-lg font-bold ${overall.color}`}>
+              {overall.text}
             </p>
-          )}
+            {anySkipped && (
+              <p className="mt-2 text-xs text-yellow-600 bg-yellow-50 dark:bg-yellow-900/20 px-3 py-1 rounded-full">
+                Some tests skipped — score based on completed tests
+              </p>
+            )}
+          </div>
           {historicalComparison && (
-            <p className="text-xs text-muted-foreground">
-              Your average across all attempts: Speech{" "}
-              {historicalComparison.avgSpeech}, Motor{" "}
-              {historicalComparison.avgMotor}, Eyes{" "}
-              {historicalComparison.avgEyes}
-            </p>
+            <div className="mt-2 rounded-lg bg-secondary/50 px-4 py-2 text-center">
+              <p className="text-xs font-medium text-muted-foreground">
+                Your averages: Speech {historicalComparison.avgSpeech} • Motor{" "}
+                {historicalComparison.avgMotor} • Eyes {historicalComparison.avgEyes}
+              </p>
+            </div>
           )}
         </div>
       </Card>
 
-      {/* SPEECH RESULTS */}
-      <Card className="border-border bg-card p-6">
+      {/* SPEECH RESULTS - Enhanced */}
+      <Card className="border-border bg-card p-6 shadow-lg hover:shadow-xl transition-shadow duration-300">
         <div className="mb-4 flex items-center gap-3">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-            <Mic className="h-4 w-4 text-primary" />
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 shadow-sm">
+            <Mic className="h-5 w-5 text-primary" />
           </div>
           <div className="flex-1">
-            <h3 className="text-base font-semibold text-foreground">
+            <h3 className="text-lg font-bold text-foreground">
               Speech / Verbal Fluency
             </h3>
             <p className="text-xs text-muted-foreground">
@@ -490,7 +501,7 @@ export function ResultsDashboard({
             </p>
           </div>
           {speechSkipped ? (
-            <div className="flex items-center gap-1.5 rounded-full bg-muted px-3 py-1 text-xs font-medium text-muted-foreground">
+            <div className="flex items-center gap-1.5 rounded-full bg-muted px-3 py-1.5 text-xs font-semibold text-muted-foreground shadow-sm">
               <SkipForward className="h-3 w-3" />
               Skipped
             </div>
@@ -678,8 +689,8 @@ export function ResultsDashboard({
         )}
       </Card>
 
-      {/* MOTOR RESULTS */}
-      <Card className="border-border bg-card p-6">
+      {/* MOTOR RESULTS - Enhanced */}
+      <Card className="border-border bg-card p-6 shadow-lg hover:shadow-xl transition-shadow duration-300">
         <div className="mb-4 flex items-center gap-3">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent/10">
             <Hand className="h-4 w-4 text-accent" />
@@ -748,52 +759,92 @@ export function ResultsDashboard({
 
             {handScatterData.length > 0 && (
               <div className="mb-4">
-                <p className="mb-2 text-xs font-medium text-muted-foreground">
-                  Wrist Position Over Time (lower spread = more stable)
+                <p className="mb-3 text-sm font-medium text-foreground flex items-center gap-2">
+                  <Activity className="h-4 w-4 text-accent" />
+                  Hand Position Stability Map
                 </p>
-                <ResponsiveContainer width="100%" height={200}>
+                <p className="mb-3 text-xs text-muted-foreground">
+                  Each dot represents your hand position. Tighter clustering indicates better stability.
+                </p>
+                <ResponsiveContainer width="100%" height={240}>
                   <ScatterChart
-                    margin={{ top: 10, right: 10, bottom: 10, left: 10 }}
+                    margin={{ top: 10, right: 20, bottom: 20, left: 0 }}
                   >
+                    <defs>
+                      <radialGradient id="scatterGradient">
+                        <stop offset="0%" stopColor="hsl(var(--accent))" stopOpacity={0.8} />
+                        <stop offset="100%" stopColor="hsl(var(--accent))" stopOpacity={0.3} />
+                      </radialGradient>
+                    </defs>
                     <CartesianGrid
                       strokeDasharray="3 3"
                       stroke="hsl(var(--border))"
+                      strokeOpacity={0.3}
                     />
                     <XAxis
                       type="number"
                       dataKey="x"
-                      name="X"
+                      name="Horizontal"
                       tick={{
-                        fill: "hsl(var(--muted-foreground))",
-                        fontSize: 10,
+                        fill: "hsl(var(--foreground))",
+                        fontSize: 11,
+                        fontWeight: 600
                       }}
+                      tickLine={false}
+                      axisLine={{ stroke: "hsl(var(--border))", strokeWidth: 2 }}
                       domain={["dataMin - 0.01", "dataMax + 0.01"]}
+                      label={{ 
+                        value: 'Horizontal Position', 
+                        position: 'insideBottom',
+                        offset: -10,
+                        style: { 
+                          fill: "hsl(var(--muted-foreground))",
+                          fontSize: 11,
+                          fontWeight: 600
+                        }
+                      }}
                     />
                     <YAxis
                       type="number"
                       dataKey="y"
-                      name="Y"
+                      name="Vertical"
                       tick={{
-                        fill: "hsl(var(--muted-foreground))",
-                        fontSize: 10,
+                        fill: "hsl(var(--foreground))",
+                        fontSize: 11,
+                        fontWeight: 600
                       }}
+                      tickLine={false}
+                      axisLine={false}
                       domain={["dataMin - 0.01", "dataMax + 0.01"]}
                       reversed
+                      label={{ 
+                        value: 'Vertical Position', 
+                        angle: -90, 
+                        position: 'insideLeft',
+                        style: { 
+                          fill: "hsl(var(--muted-foreground))",
+                          fontSize: 11,
+                          fontWeight: 600
+                        }
+                      }}
                     />
-                    <ZAxis range={[15, 15]} />
+                    <ZAxis range={[20, 20]} />
                     <Tooltip
                       contentStyle={{
                         backgroundColor: "hsl(var(--card))",
-                        border: "1px solid hsl(var(--border))",
-                        borderRadius: "8px",
+                        border: "2px solid hsl(var(--border))",
+                        borderRadius: "12px",
                         color: "hsl(var(--foreground))",
-                        fontSize: 11,
+                        fontSize: 12,
+                        padding: "10px",
+                        boxShadow: "0 4px 12px rgba(0,0,0,0.1)"
                       }}
+                      cursor={{ strokeDasharray: '3 3' }}
                     />
                     <Scatter
                       data={handScatterData}
-                      fill="hsl(var(--accent))"
-                      fillOpacity={0.6}
+                      fill="url(#scatterGradient)"
+                      fillOpacity={0.7}
                     />
                   </ScatterChart>
                 </ResponsiveContainer>
@@ -856,8 +907,8 @@ export function ResultsDashboard({
         )}
       </Card>
 
-      {/* EYE RESULTS */}
-      <Card className="border-border bg-card p-6">
+      {/* EYE RESULTS - Enhanced */}
+      <Card className="border-border bg-card p-6 shadow-lg hover:shadow-xl transition-shadow duration-300">
         <div className="mb-4 flex items-center gap-3">
           <div
             className="flex h-8 w-8 items-center justify-center rounded-lg"
@@ -938,53 +989,89 @@ export function ResultsDashboard({
 
             {eyeDeltaData.length > 0 && (
               <div className="mb-4">
-                <p className="mb-2 text-xs font-medium text-muted-foreground">
-                  Frame-to-Frame Eye Movement Delta (lower = smoother)
+                <p className="mb-3 text-sm font-medium text-foreground flex items-center gap-2">
+                  <Eye className="h-4 w-4 text-chart-3" />
+                  Eye Movement Smoothness
                 </p>
-                <ResponsiveContainer width="100%" height={180}>
+                <p className="mb-3 text-xs text-muted-foreground">
+                  Lower values indicate smoother, more controlled eye movements.
+                </p>
+                <ResponsiveContainer width="100%" height={220}>
                   <LineChart
                     data={eyeDeltaData}
-                    margin={{ top: 5, right: 10, bottom: 5, left: 10 }}
+                    margin={{ top: 10, right: 20, bottom: 20, left: 0 }}
                   >
+                    <defs>
+                      <linearGradient id="lineGradient" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="hsl(var(--chart-3))" stopOpacity={0.8} />
+                        <stop offset="100%" stopColor="hsl(var(--chart-3))" stopOpacity={0.1} />
+                      </linearGradient>
+                    </defs>
                     <CartesianGrid
                       strokeDasharray="3 3"
                       stroke="hsl(var(--border))"
+                      strokeOpacity={0.3}
+                      vertical={false}
                     />
                     <XAxis
                       dataKey="frame"
                       tick={{
-                        fill: "hsl(var(--muted-foreground))",
-                        fontSize: 10,
+                        fill: "hsl(var(--foreground))",
+                        fontSize: 11,
+                        fontWeight: 600
                       }}
+                      tickLine={false}
+                      axisLine={{ stroke: "hsl(var(--border))", strokeWidth: 2 }}
                       label={{
-                        value: "Frame",
+                        value: "Frame Number",
                         position: "insideBottom",
-                        offset: -2,
-                        fill: "hsl(var(--muted-foreground))",
-                        fontSize: 10,
+                        offset: -10,
+                        style: {
+                          fill: "hsl(var(--muted-foreground))",
+                          fontSize: 11,
+                          fontWeight: 600
+                        }
                       }}
                     />
                     <YAxis
                       tick={{
-                        fill: "hsl(var(--muted-foreground))",
-                        fontSize: 10,
+                        fill: "hsl(var(--foreground))",
+                        fontSize: 11,
+                        fontWeight: 600
+                      }}
+                      tickLine={false}
+                      axisLine={false}
+                      label={{
+                        value: "Movement Delta",
+                        angle: -90,
+                        position: "insideLeft",
+                        style: {
+                          fill: "hsl(var(--muted-foreground))",
+                          fontSize: 11,
+                          fontWeight: 600
+                        }
                       }}
                     />
                     <Tooltip
                       contentStyle={{
                         backgroundColor: "hsl(var(--card))",
-                        border: "1px solid hsl(var(--border))",
-                        borderRadius: "8px",
+                        border: "2px solid hsl(var(--border))",
+                        borderRadius: "12px",
                         color: "hsl(var(--foreground))",
-                        fontSize: 11,
+                        fontSize: 12,
+                        padding: "10px",
+                        boxShadow: "0 4px 12px rgba(0,0,0,0.1)"
                       }}
+                      cursor={{ stroke: "hsl(var(--chart-3))", strokeWidth: 2, strokeDasharray: '5 5' }}
                     />
                     <Line
                       type="monotone"
                       dataKey="delta"
                       stroke="hsl(var(--chart-3))"
-                      strokeWidth={1.5}
+                      strokeWidth={2.5}
                       dot={false}
+                      fill="url(#lineGradient)"
+                      fillOpacity={0.3}
                     />
                   </LineChart>
                 </ResponsiveContainer>
@@ -1057,63 +1144,132 @@ export function ResultsDashboard({
         )}
       </Card>
 
-      {/* SUMMARY CHARTS */}
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Card className="border-border bg-card p-4">
-          <p className="mb-2 text-sm font-medium text-foreground">
-            Performance Radar
-          </p>
-          <ResponsiveContainer width="100%" height={280}>
-            <RadarChart data={radarData} cx="50%" cy="55%" outerRadius="60%">
-              <PolarGrid stroke="hsl(var(--border))" />
+      {/* SUMMARY CHARTS - Enhanced UI */}
+      <div className="grid gap-6 sm:grid-cols-2">
+        <Card className="border-border bg-gradient-to-br from-card to-card/50 p-6 shadow-lg">
+          <div className="mb-4 flex items-center gap-2">
+            <Activity className="h-5 w-5 text-primary" />
+            <p className="text-base font-semibold text-foreground">
+              Performance Overview
+            </p>
+          </div>
+          <ResponsiveContainer width="100%" height={300}>
+            <RadarChart data={radarData} cx="50%" cy="50%" outerRadius="70%">
+              <defs>
+                <linearGradient id="radarGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.8} />
+                  <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0.2} />
+                </linearGradient>
+              </defs>
+              <PolarGrid 
+                stroke="hsl(var(--border))" 
+                strokeWidth={1.5}
+                strokeOpacity={0.3}
+              />
               <PolarAngleAxis
                 dataKey="task"
-                tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11 }}
+                tick={{ 
+                  fill: "hsl(var(--foreground))", 
+                  fontSize: 13,
+                  fontWeight: 600
+                }}
                 tickLine={false}
               />
               <PolarRadiusAxis
                 angle={90}
                 domain={[0, 100]}
-                tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 10 }}
+                tick={{ 
+                  fill: "hsl(var(--muted-foreground))", 
+                  fontSize: 11
+                }}
+                tickCount={6}
               />
               <Radar
                 name="Score"
                 dataKey="score"
                 stroke="hsl(var(--primary))"
-                fill="hsl(var(--primary))"
-                fillOpacity={0.3}
+                strokeWidth={3}
+                fill="url(#radarGradient)"
+                fillOpacity={0.6}
               />
             </RadarChart>
           </ResponsiveContainer>
         </Card>
 
-        <Card className="border-border bg-card p-4">
-          <p className="mb-2 text-sm font-medium text-foreground">
-            Score Breakdown
-          </p>
-          <ResponsiveContainer width="100%" height={220}>
-            <BarChart data={barData}>
+        <Card className="border-border bg-gradient-to-br from-card to-card/50 p-6 shadow-lg">
+          <div className="mb-4 flex items-center gap-2">
+            <FileText className="h-5 w-5 text-accent" />
+            <p className="text-base font-semibold text-foreground">
+              Score Breakdown
+            </p>
+          </div>
+          <ResponsiveContainer width="100%" height={240}>
+            <BarChart data={barData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+              <defs>
+                <linearGradient id="barGradient1" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.9} />
+                  <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0.6} />
+                </linearGradient>
+                <linearGradient id="barGradient2" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="hsl(var(--accent))" stopOpacity={0.9} />
+                  <stop offset="100%" stopColor="hsl(var(--accent))" stopOpacity={0.6} />
+                </linearGradient>
+                <linearGradient id="barGradient3" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="hsl(var(--chart-3))" stopOpacity={0.9} />
+                  <stop offset="100%" stopColor="hsl(var(--chart-3))" stopOpacity={0.6} />
+                </linearGradient>
+              </defs>
               <CartesianGrid
                 strokeDasharray="3 3"
                 stroke="hsl(var(--border))"
+                strokeOpacity={0.3}
+                vertical={false}
               />
               <XAxis
                 dataKey="name"
-                tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
+                tick={{ 
+                  fill: "hsl(var(--foreground))", 
+                  fontSize: 13,
+                  fontWeight: 600
+                }}
+                tickLine={false}
+                axisLine={{ stroke: "hsl(var(--border))", strokeWidth: 2 }}
               />
               <YAxis
                 domain={[0, 100]}
-                tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 10 }}
+                tick={{ 
+                  fill: "hsl(var(--muted-foreground))", 
+                  fontSize: 11
+                }}
+                tickLine={false}
+                axisLine={false}
+                label={{ 
+                  value: 'Score', 
+                  angle: -90, 
+                  position: 'insideLeft',
+                  style: { 
+                    fill: "hsl(var(--muted-foreground))",
+                    fontSize: 12,
+                    fontWeight: 600
+                  }
+                }}
               />
               <Tooltip
                 contentStyle={{
                   backgroundColor: "hsl(var(--card))",
-                  border: "1px solid hsl(var(--border))",
-                  borderRadius: "8px",
+                  border: "2px solid hsl(var(--border))",
+                  borderRadius: "12px",
                   color: "hsl(var(--foreground))",
+                  padding: "12px",
+                  boxShadow: "0 4px 12px rgba(0,0,0,0.1)"
                 }}
+                cursor={{ fill: "hsl(var(--accent))", opacity: 0.1 }}
               />
-              <Bar dataKey="score" radius={[4, 4, 0, 0]} />
+              <Bar 
+                dataKey="score" 
+                radius={[8, 8, 0, 0]}
+                fill="url(#barGradient1)"
+              />
             </BarChart>
           </ResponsiveContainer>
         </Card>
@@ -1288,13 +1444,33 @@ export function ResultsDashboard({
       </Card>
 
       {/* Continue to next actions */}
-      <Button
-        className="w-full gap-2"
-        onClick={onContinue}
-      >
-        Continue
-        <ArrowRight className="h-4 w-4" />
-      </Button>
+      <div className="flex gap-3">
+        {results.recordingUrl && (
+          <Button
+            variant="outline"
+            className="flex-1 gap-2"
+            onClick={() => setShowRecording(true)}
+          >
+            <Video className="h-4 w-4" />
+            View Recording
+          </Button>
+        )}
+        <Button
+          className={results.recordingUrl ? "flex-1 gap-2" : "w-full gap-2"}
+          onClick={onContinue}
+        >
+          Continue
+          <ArrowRight className="h-4 w-4" />
+        </Button>
+      </div>
+
+      {/* Recording viewer modal */}
+      {showRecording && results.recordingUrl && (
+        <RecordingViewer
+          recordingUrl={results.recordingUrl}
+          onClose={() => setShowRecording(false)}
+        />
+      )}
     </div>
   )
 }
