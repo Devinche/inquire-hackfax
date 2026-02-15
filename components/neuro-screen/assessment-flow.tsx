@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useRef, useEffect, useCallback } from "react"
+import { saveAssessment } from "@/lib/api-client"
 import { SpeechTask } from "./speech-task"
 import { HandTracking } from "./hand-tracking"
 import { EyeTracking } from "./eye-tracking"
@@ -111,9 +112,37 @@ export function AssessmentFlow() {
   // ✅ ADD THIS: overlay canvas for MediaPipe landmarks
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null)
 
-  // Load history on mount
+  // Load history from database on mount
   useEffect(() => {
-    setHistory(loadHistory())
+    async function loadHistoryFromDB() {
+      try {
+        const response = await fetch("/api/assessments")
+        if (response.ok) {
+          const data = await response.json()
+          // Convert database assessments to StoredAssessment format
+          const dbHistory: StoredAssessment[] = data.assessments.map((a: any) => ({
+            id: a.id.toString(),
+            timestamp: new Date(a.timestamp).getTime(),
+            results: {
+              speech: a.speechData,
+              hand: a.handData,
+              eye: a.eyeData,
+              recordingUrl: undefined, // Not stored in DB yet
+            },
+          }))
+          setHistory(dbHistory)
+        } else {
+          // Fallback to localStorage if not authenticated
+          setHistory(loadHistory())
+        }
+      } catch (error) {
+        console.error("Failed to load history from database:", error)
+        // Fallback to localStorage
+        setHistory(loadHistory())
+      }
+    }
+    
+    loadHistoryFromDB()
   }, [])
 
   const startCamera = useCallback(async () => {
@@ -323,6 +352,20 @@ export function AssessmentFlow() {
       const newHistory = [assessment, ...history]
       setHistory(newHistory)
       saveHistory(newHistory)
+      
+      // Also save to database
+      try {
+        await saveAssessment({
+          speechData: finalResults.speech,
+          handData: finalResults.hand,
+          eyeData: finalResults.eye,
+          timestamp: new Date(assessment.timestamp).toISOString(),
+        })
+      } catch (error) {
+        console.error("Failed to save to database:", error)
+        // Continue anyway - localStorage backup exists
+      }
+      
       advanceToStep(4)
     },
     [advanceToStep, results, history, stopRecording]
