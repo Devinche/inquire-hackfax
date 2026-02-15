@@ -21,6 +21,9 @@ export interface SpeechData {
   duration: number
   words: string[]
   letter: string
+  repeatWords: Record<string, number> // word -> count of times repeated
+  wasSkipped: boolean
+  restartCount: number
 }
 
 export interface HandData {
@@ -29,6 +32,8 @@ export interface HandData {
   positions: Array<{ x: number; y: number }>
   varianceX: number
   varianceY: number
+  wasSkipped: boolean
+  restartCount: number
 }
 
 export interface EyeData {
@@ -37,6 +42,9 @@ export interface EyeData {
   deltas: number[]
   meanDelta: number
   maxDelta: number
+  gazeOnTarget: number // percentage of time gaze was on the dot
+  wasSkipped: boolean
+  restartCount: number
 }
 
 export interface AssessmentResults {
@@ -147,23 +155,40 @@ export function AssessmentFlow() {
   }, [])
 
   const handleNext = useCallback(() => {
-    setStep((prev) => prev + 1)
-  }, [])
+    setStep((prev) => {
+      const next = prev + 1
+      if (!cameraOn && next >= 1 && next <= 3) {
+        startCamera()
+      }
+      return next
+    })
+  }, [cameraOn, startCamera])
+
+  // Ensure camera is on when advancing to any test step
+  const advanceToStep = useCallback(
+    (nextStep: number) => {
+      setStep(nextStep)
+      if (!cameraOn && nextStep >= 1 && nextStep <= 3) {
+        startCamera()
+      }
+    },
+    [cameraOn, startCamera]
+  )
 
   const handleSpeechComplete = useCallback(
     (data: SpeechData) => {
       setResults((prev) => ({ ...prev, speech: data }))
-      handleNext()
+      advanceToStep(2)
     },
-    [handleNext]
+    [advanceToStep]
   )
 
   const handleHandComplete = useCallback(
     (data: HandData) => {
       setResults((prev) => ({ ...prev, hand: data }))
-      handleNext()
+      advanceToStep(3)
     },
-    [handleNext]
+    [advanceToStep]
   )
 
   const handleEyeComplete = useCallback(
@@ -179,10 +204,47 @@ export function AssessmentFlow() {
       const newHistory = [assessment, ...history]
       setHistory(newHistory)
       saveHistory(newHistory)
-      handleNext()
+      advanceToStep(4)
     },
-    [handleNext, results, history]
+    [advanceToStep, results, history]
   )
+
+  // Skip handlers: produce data with wasSkipped=true
+  const handleSkipSpeech = useCallback(() => {
+    handleSpeechComplete({
+      duration: 0,
+      words: [],
+      letter: "",
+      repeatWords: {},
+      wasSkipped: true,
+      restartCount: 0,
+    })
+  }, [handleSpeechComplete])
+
+  const handleSkipHand = useCallback(() => {
+    handleHandComplete({
+      stability: 0,
+      samples: 0,
+      positions: [],
+      varianceX: 0,
+      varianceY: 0,
+      wasSkipped: true,
+      restartCount: 0,
+    })
+  }, [handleHandComplete])
+
+  const handleSkipEye = useCallback(() => {
+    handleEyeComplete({
+      smoothness: 0,
+      samples: 0,
+      deltas: [],
+      meanDelta: 0,
+      maxDelta: 0,
+      gazeOnTarget: 0,
+      wasSkipped: true,
+      restartCount: 0,
+    })
+  }, [handleEyeComplete])
 
   const handleRestart = useCallback(() => {
     setStep(0)
@@ -370,13 +432,17 @@ export function AssessmentFlow() {
               {/* Task content */}
               <div className="flex-1">
                 {step === 1 && (
-                  <SpeechTask onComplete={handleSpeechComplete} />
+                  <SpeechTask
+                    onComplete={handleSpeechComplete}
+                    onSkip={handleSkipSpeech}
+                  />
                 )}
                 {step === 2 && (
                   <HandTracking
                     videoRef={videoRef}
                     cameraOn={cameraOn}
                     onComplete={handleHandComplete}
+                    onSkip={handleSkipHand}
                   />
                 )}
                 {step === 3 && (
@@ -384,6 +450,7 @@ export function AssessmentFlow() {
                     videoRef={videoRef}
                     cameraOn={cameraOn}
                     onComplete={handleEyeComplete}
+                    onSkip={handleSkipEye}
                   />
                 )}
                 {step === 4 && (

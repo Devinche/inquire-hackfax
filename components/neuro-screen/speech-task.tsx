@@ -3,7 +3,7 @@
 import { useState, useRef, useCallback, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
-import { Mic, Square, CheckCircle2 } from "lucide-react"
+import { Mic, Square, CheckCircle2, SkipForward, RotateCcw } from "lucide-react"
 import { Progress } from "@/components/ui/progress"
 import type { SpeechData } from "./assessment-flow"
 
@@ -12,9 +12,10 @@ const MAX_DURATION = 60
 
 interface SpeechTaskProps {
   onComplete: (data: SpeechData) => void
+  onSkip: () => void
 }
 
-export function SpeechTask({ onComplete }: SpeechTaskProps) {
+export function SpeechTask({ onComplete, onSkip }: SpeechTaskProps) {
   const [status, setStatus] = useState<"idle" | "recording" | "done">("idle")
   const [timeLeft, setTimeLeft] = useState(MAX_DURATION)
   const [letter] = useState(
@@ -22,11 +23,14 @@ export function SpeechTask({ onComplete }: SpeechTaskProps) {
   )
   const [capturedWords, setCapturedWords] = useState<string[]>([])
   const [liveTranscript, setLiveTranscript] = useState("")
+  const [restartCount, setRestartCount] = useState(0)
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const startTimeRef = useRef<number>(0)
   const recognitionRef = useRef<any>(null)
-  const wordsRef = useRef<string[]>([])
+  // Track ALL occurrences (including repeats) for repeat analysis
+  const allWordsRef = useRef<string[]>([])
+  const wordCountsRef = useRef<Record<string, number>>({})
   const stoppedRef = useRef(false)
 
   const cleanup = useCallback(() => {
@@ -56,31 +60,41 @@ export function SpeechTask({ onComplete }: SpeechTaskProps) {
     const duration = Math.round((Date.now() - startTimeRef.current) / 1000)
     setStatus("done")
 
-    // Deduplicate words
-    const uniqueWords = [...new Set(wordsRef.current)]
+    // Deduplicate words for the final list
+    const uniqueWords = [...new Set(allWordsRef.current)]
+
+    // Build repeat map: only include words said more than once
+    const repeatWords: Record<string, number> = {}
+    for (const [word, count] of Object.entries(wordCountsRef.current)) {
+      if (count > 1) {
+        repeatWords[word] = count
+      }
+    }
 
     setTimeout(() => {
       onComplete({
         duration,
         words: uniqueWords,
         letter,
+        repeatWords,
+        wasSkipped: false,
+        restartCount,
       })
     }, 0)
-  }, [cleanup, letter, onComplete])
+  }, [cleanup, letter, onComplete, restartCount])
 
   const startRecording = useCallback(async () => {
     stoppedRef.current = false
-    wordsRef.current = []
+    allWordsRef.current = []
+    wordCountsRef.current = {}
     setCapturedWords([])
     setLiveTranscript("")
 
-    // Check for Web Speech API support
     const SpeechRecognition =
       (window as any).SpeechRecognition ||
       (window as any).webkitSpeechRecognition
 
     if (!SpeechRecognition) {
-      // Fallback: just do a timed recording without transcription
       setStatus("recording")
       startTimeRef.current = Date.now()
       setTimeLeft(MAX_DURATION)
@@ -99,9 +113,8 @@ export function SpeechTask({ onComplete }: SpeechTaskProps) {
     }
 
     try {
-      // Request microphone permission
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      stream.getTracks().forEach((t) => t.stop()) // release immediately, SpeechRecognition handles its own audio
+      stream.getTracks().forEach((t) => t.stop())
 
       const recognition = new SpeechRecognition()
       recognition.continuous = true
@@ -114,18 +127,18 @@ export function SpeechTask({ onComplete }: SpeechTaskProps) {
         for (let i = event.resultIndex; i < event.results.length; i++) {
           const transcript = event.results[i][0].transcript.trim()
           if (event.results[i].isFinal) {
-            // Extract individual words from the final transcript
             const newWords = transcript
               .split(/\s+/)
               .map((w: string) => w.toLowerCase().replace(/[^a-z']/g, ""))
               .filter((w: string) => w.length > 0)
 
             for (const w of newWords) {
-              if (!wordsRef.current.includes(w)) {
-                wordsRef.current.push(w)
-              }
+              allWordsRef.current.push(w)
+              wordCountsRef.current[w] =
+                (wordCountsRef.current[w] || 0) + 1
             }
-            setCapturedWords([...wordsRef.current])
+            // Update displayed words (unique only)
+            setCapturedWords([...new Set(allWordsRef.current)])
           } else {
             interim = transcript
           }
@@ -140,7 +153,6 @@ export function SpeechTask({ onComplete }: SpeechTaskProps) {
       }
 
       recognition.onend = () => {
-        // Restart if not done yet
         if (!stoppedRef.current && recognitionRef.current) {
           try {
             recognitionRef.current.start()
@@ -170,14 +182,42 @@ export function SpeechTask({ onComplete }: SpeechTaskProps) {
     }
   }, [finishRecording])
 
+  const handleRestart = useCallback(() => {
+    stoppedRef.current = true
+    cleanup()
+    setRestartCount((c) => c + 1)
+    setStatus("idle")
+    setTimeLeft(MAX_DURATION)
+    setCapturedWords([])
+    setLiveTranscript("")
+    allWordsRef.current = []
+    wordCountsRef.current = {}
+  }, [cleanup])
+
   const elapsed = MAX_DURATION - timeLeft
   const progress = (elapsed / MAX_DURATION) * 100
 
+  // Count repeated words in real time
+  const repeatCount = Object.values(wordCountsRef.current).filter(
+    (c) => c > 1
+  ).length
+
   return (
     <Card className="border-border bg-card p-6">
-      <h2 className="mb-1 text-xl font-semibold text-foreground">
-        Speech Task
-      </h2>
+      <div className="mb-1 flex items-center justify-between">
+        <h2 className="text-xl font-semibold text-foreground">Speech Task</h2>
+        {status === "idle" ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="gap-1.5 text-xs text-muted-foreground"
+            onClick={onSkip}
+          >
+            <SkipForward className="h-3.5 w-3.5" />
+            Skip Test
+          </Button>
+        ) : null}
+      </div>
       <p className="mb-6 text-sm text-muted-foreground leading-relaxed">
         Say as many words as you can that start with the letter shown below. You
         have 60 seconds, but you can stop early. Based on the phonemic verbal
@@ -194,10 +234,17 @@ export function SpeechTask({ onComplete }: SpeechTaskProps) {
       </div>
 
       {status === "idle" && (
-        <Button className="w-full gap-2" onClick={startRecording}>
-          <Mic className="h-4 w-4" />
-          Start Recording
-        </Button>
+        <div className="space-y-3">
+          <Button className="w-full gap-2" onClick={startRecording}>
+            <Mic className="h-4 w-4" />
+            {restartCount > 0 ? "Start Again" : "Start Recording"}
+          </Button>
+          {restartCount > 0 && (
+            <p className="text-center text-xs text-muted-foreground">
+              Restarted {restartCount} time{restartCount > 1 ? "s" : ""}
+            </p>
+          )}
+        </div>
       )}
 
       {status === "recording" && (
@@ -216,24 +263,42 @@ export function SpeechTask({ onComplete }: SpeechTaskProps) {
               <p className="text-xs font-medium text-muted-foreground">
                 Words captured
               </p>
-              <p className="text-lg font-bold text-foreground">
-                {capturedWords.length}
-              </p>
+              <div className="flex items-center gap-3">
+                {repeatCount > 0 && (
+                  <p className="text-xs text-yellow-500">
+                    {repeatCount} repeated
+                  </p>
+                )}
+                <p className="text-lg font-bold text-foreground">
+                  {capturedWords.length}
+                </p>
+              </div>
             </div>
             {capturedWords.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
-                {capturedWords.map((word, i) => (
-                  <span
-                    key={`${word}-${i}`}
-                    className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                      word.startsWith(letter.toLowerCase())
-                        ? "bg-accent/20 text-accent"
-                        : "bg-muted text-muted-foreground"
-                    }`}
-                  >
-                    {word}
-                  </span>
-                ))}
+                {capturedWords.map((word, i) => {
+                  const isRepeat = (wordCountsRef.current[word] ?? 0) > 1
+                  const matches = word.startsWith(letter.toLowerCase())
+                  return (
+                    <span
+                      key={`${word}-${i}`}
+                      className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                        isRepeat
+                          ? "bg-yellow-500/20 text-yellow-600 ring-1 ring-yellow-500/30"
+                          : matches
+                            ? "bg-accent/20 text-accent"
+                            : "bg-muted text-muted-foreground"
+                      }`}
+                    >
+                      {word}
+                      {isRepeat && (
+                        <span className="ml-1 text-yellow-500">
+                          x{wordCountsRef.current[word]}
+                        </span>
+                      )}
+                    </span>
+                  )
+                })}
               </div>
             )}
             {liveTranscript && (
@@ -253,14 +318,26 @@ export function SpeechTask({ onComplete }: SpeechTaskProps) {
             </span>
           </div>
 
-          <Button
-            variant="outline"
-            className="w-full gap-2"
-            onClick={finishRecording}
-          >
-            <Square className="h-4 w-4" />
-            Stop Recording
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="flex-1 gap-1.5"
+              onClick={handleRestart}
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              Restart
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="flex-1 gap-1.5"
+              onClick={finishRecording}
+            >
+              <Square className="h-3.5 w-3.5" />
+              Stop Recording
+            </Button>
+          </div>
         </div>
       )}
 
