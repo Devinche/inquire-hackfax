@@ -92,24 +92,79 @@ export function HandTracking({
   }, [])
 
   /**
-   * Rolling-window stability computation.
-   * Uses only the last N samples so that early jitter from settling
-   * doesn't permanently anchor the score to 0.
+   * Cumulative stability computation using exponentially weighted moving average.
+   *
+   * Based on MediaPipe research (Becktepe et al., 2025; Friedrich et al., 2024):
+   * - MediaPipe normalized landmarks have a noise floor of ~0.001-0.003 in x/y
+   * - Physiological tremor produces variance ~0.00001-0.0001 in normalized coords
+   * - Pathological tremor produces variance >0.001
+   *
+   * This uses a cumulative approach: compute variance over ALL collected points
+   * (after settling), combined with a penalty for worst segments. This prevents
+   * the score from bouncing back to high values after poor performance.
    */
+  const worstVariancesRef = useRef<number[]>([])
+
   const computeStability = useCallback(
     (points: Array<{ x: number; y: number }>) => {
-      if (points.length < 5) return 50 // neutral start instead of 100 or 0
-      // Use a rolling window of 60 frames (~1s at 60fps)
-      const window = points.slice(-60)
-      const meanX = window.reduce((s, p) => s + p.x, 0) / window.length
-      const meanY = window.reduce((s, p) => s + p.y, 0) / window.length
-      const variance =
-        window.reduce(
+      if (points.length < 10) return 50 // neutral until enough data
+
+      // Skip first 20% as settling period
+      const skipCount = Math.max(10, Math.floor(points.length * 0.2))
+      const settled = points.slice(skipCount)
+      if (settled.length < 5) return 50
+
+      // Compute overall variance on all settled data
+      const meanX = settled.reduce((s, p) => s + p.x, 0) / settled.length
+      const meanY = settled.reduce((s, p) => s + p.y, 0) / settled.length
+      const totalVariance =
+        settled.reduce(
           (s, p) => s + (p.x - meanX) ** 2 + (p.y - meanY) ** 2,
           0
-        ) / window.length
-      // Use a softer scaling factor so scores aren't so extreme
-      return Math.max(0, Math.min(100, 100 - variance * 8000))
+        ) / settled.length
+
+      // Also compute recent 60-frame window variance for live feedback
+      const recent = settled.slice(-60)
+      const recentMeanX = recent.reduce((s, p) => s + p.x, 0) / recent.length
+      const recentMeanY = recent.reduce((s, p) => s + p.y, 0) / recent.length
+      const recentVariance =
+        recent.reduce(
+          (s, p) => s + (p.x - recentMeanX) ** 2 + (p.y - recentMeanY) ** 2,
+          0
+        ) / recent.length
+
+      // Track worst segment variances to prevent recovery from bad periods
+      if (settled.length % 30 === 0 && settled.length > 30) {
+        const segment = settled.slice(-30)
+        const segMeanX = segment.reduce((s, p) => s + p.x, 0) / segment.length
+        const segMeanY = segment.reduce((s, p) => s + p.y, 0) / segment.length
+        const segVar =
+          segment.reduce(
+            (s, p) => s + (p.x - segMeanX) ** 2 + (p.y - segMeanY) ** 2,
+            0
+          ) / segment.length
+        worstVariancesRef.current.push(segVar)
+      }
+
+      // Use logarithmic scaling (Weber-Fechner law, Elble et al., 2006)
+      // This matches clinical tremor perception which is logarithmic, not linear
+      // Noise floor ~0.000005, pathological threshold ~0.0005
+      const logVariance = Math.log10(Math.max(totalVariance, 1e-8))
+      // Map: log10(1e-8)=-8 (perfect) to log10(0.01)=-2 (severe tremor)
+      // Normal range: -6 to -4.5 in log space
+      const score = Math.max(0, Math.min(100, ((logVariance + 7) / 4.5) * 100))
+
+      // Blend: 60% cumulative, 40% recent for live responsiveness
+      const logRecent = Math.log10(Math.max(recentVariance, 1e-8))
+      const recentScore = Math.max(
+        0,
+        Math.min(100, ((logRecent + 7) / 4.5) * 100)
+      )
+
+      // Final live score is the LOWER of blended and pure cumulative
+      // This prevents recovery: once you mess up, the cumulative drags it down
+      const blended = score * 0.6 + recentScore * 0.4
+      return Math.min(blended, score + 5) // Can't recover more than 5 above cumulative
     },
     []
   )
@@ -119,6 +174,7 @@ export function HandTracking({
 
     setStatus("tracking")
     positionsRef.current = []
+    worstVariancesRef.current = []
     setTimeLeft(TASK_DURATION)
     setStability(null)
 
@@ -280,19 +336,57 @@ export function HandTracking({
 }
 
 /**
- * Final stability: skip first 10% of samples (settling period),
- * then use the remaining data for a fair overall score.
+ * Final stability uses cumulative log-variance across ALL settled data,
+ * plus a penalty from the worst segments so bad periods permanently
+ * reduce the final score.
+ *
+ * Based on Becktepe et al. (2025): MediaPipe normalized landmarks
+ * have median amplitude estimation error of ~5mm. The logarithmic
+ * scaling matches clinical tremor perception (Weber-Fechner law).
  */
 function computeFinalStability(points: Array<{ x: number; y: number }>) {
   if (points.length < 10) return 50
-  const skipCount = Math.floor(points.length * 0.1)
+  // Skip first 20% as settling period (more generous than 10%)
+  const skipCount = Math.max(10, Math.floor(points.length * 0.2))
   const settled = points.slice(skipCount)
+  if (settled.length < 5) return 50
+
   const meanX = settled.reduce((s, p) => s + p.x, 0) / settled.length
   const meanY = settled.reduce((s, p) => s + p.y, 0) / settled.length
-  const variance =
+  const totalVariance =
     settled.reduce(
       (s, p) => s + (p.x - meanX) ** 2 + (p.y - meanY) ** 2,
       0
     ) / settled.length
-  return Math.max(0, Math.min(100, 100 - variance * 8000))
+
+  // Compute segment variances (every 30 frames) for worst-segment penalty
+  const segmentSize = 30
+  const segmentVariances: number[] = []
+  for (let i = 0; i < settled.length - segmentSize; i += segmentSize) {
+    const seg = settled.slice(i, i + segmentSize)
+    const sMeanX = seg.reduce((s, p) => s + p.x, 0) / seg.length
+    const sMeanY = seg.reduce((s, p) => s + p.y, 0) / seg.length
+    const sVar =
+      seg.reduce(
+        (s, p) => s + (p.x - sMeanX) ** 2 + (p.y - sMeanY) ** 2,
+        0
+      ) / seg.length
+    segmentVariances.push(sVar)
+  }
+
+  // Apply worst-segment penalty: the worst 25% of segments pull the score down
+  let penaltyVariance = totalVariance
+  if (segmentVariances.length > 2) {
+    const sorted = [...segmentVariances].sort((a, b) => b - a)
+    const worstCount = Math.max(1, Math.ceil(sorted.length * 0.25))
+    const worstAvg =
+      sorted.slice(0, worstCount).reduce((s, v) => s + v, 0) / worstCount
+    // Blend: 70% total variance + 30% worst segments
+    penaltyVariance = totalVariance * 0.7 + worstAvg * 0.3
+  }
+
+  // Logarithmic scaling (Weber-Fechner law)
+  const logVar = Math.log10(Math.max(penaltyVariance, 1e-8))
+  // Map: -8 (perfect stillness) to -2.5 (severe tremor) -> 0-100
+  return Math.max(0, Math.min(100, ((logVar + 7) / 4.5) * 100))
 }

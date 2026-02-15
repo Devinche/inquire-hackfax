@@ -213,7 +213,7 @@ export function AssessmentFlow() {
     [history, selectedReport]
   )
 
-  const showCamera = step > 0 && step < 4 && view === "assessment"
+  const showCamera = step > 0 && view === "assessment"
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
@@ -281,7 +281,7 @@ export function AssessmentFlow() {
           </Button>
 
           {/* Camera toggle */}
-          {view === "assessment" && step < 4 && (
+          {view === "assessment" && (
             <Button
               variant="outline"
               size="sm"
@@ -386,6 +386,31 @@ export function AssessmentFlow() {
                     onComplete={handleEyeComplete}
                   />
                 )}
+                {step === 4 && (
+                  <div>
+                    {selectedReport ? (
+                      <div className="mb-4">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="gap-1 text-muted-foreground"
+                          onClick={() => {
+                            setSelectedReport(null)
+                            setView("history")
+                          }}
+                        >
+                          <ChevronLeft className="h-4 w-4" />
+                          Back to History
+                        </Button>
+                      </div>
+                    ) : null}
+                    <ResultsDashboard
+                      results={selectedReport?.results ?? results}
+                      onRestart={handleRestart}
+                      allHistory={history}
+                    />
+                  </div>
+                )}
               </div>
             </div>
           ) : (
@@ -464,31 +489,6 @@ export function AssessmentFlow() {
                 </div>
               )}
 
-              {step === 4 && (
-                <div>
-                  {selectedReport ? (
-                    <div className="mb-4">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="gap-1 text-muted-foreground"
-                        onClick={() => {
-                          setSelectedReport(null)
-                          setView("history")
-                        }}
-                      >
-                        <ChevronLeft className="h-4 w-4" />
-                        Back to History
-                      </Button>
-                    </div>
-                  ) : null}
-                  <ResultsDashboard
-                    results={selectedReport?.results ?? results}
-                    onRestart={handleRestart}
-                    allHistory={history}
-                  />
-                </div>
-              )}
             </div>
           )}
         </main>

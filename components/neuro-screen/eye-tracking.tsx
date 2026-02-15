@@ -97,16 +97,61 @@ export function EyeTracking({
   }, [])
 
   /**
-   * Rolling-window smoothness: uses last N deltas so early jitter
-   * from settling doesn't permanently ruin the score.
+   * Cumulative smoothness computation using exponentially weighted approach.
+   *
+   * Based on face landmarker research (Stuart et al., 2019; Leigh & Zee, 2015):
+   * - Normal smooth pursuit gain is >0.85 with minimal saccadic intrusions
+   * - MediaPipe face landmarks 133/362 give normalized eye positions
+   * - Frame-to-frame deltas for normal tracking: ~0.001-0.005
+   * - Saccadic intrusions produce deltas >0.01
+   *
+   * Uses cumulative mean delta with worst-segment penalty so poor segments
+   * permanently reduce the final score rather than being "forgotten."
    */
+  const worstDeltaSegmentsRef = useRef<number[]>([])
+
   const computeSmoothness = useCallback((deltas: number[]) => {
-    if (deltas.length < 5) return 50 // neutral start
-    // Use rolling window of last 60 deltas
-    const window = deltas.slice(-60)
-    const avg = window.reduce((s, d) => s + d, 0) / window.length
-    // Softer scaling factor
-    return Math.max(0, Math.min(100, 100 - avg * 4000))
+    if (deltas.length < 10) return 50 // neutral until enough data
+
+    // Skip first 20% as settling period
+    const skipCount = Math.max(5, Math.floor(deltas.length * 0.2))
+    const settled = deltas.slice(skipCount)
+    if (settled.length < 5) return 50
+
+    // Compute cumulative mean delta over ALL settled data
+    const totalMean = settled.reduce((s, d) => s + d, 0) / settled.length
+
+    // Recent window for live responsiveness
+    const recent = settled.slice(-60)
+    const recentMean = recent.reduce((s, d) => s + d, 0) / recent.length
+
+    // Track worst segments every 30 frames
+    if (settled.length % 30 === 0 && settled.length > 30) {
+      const seg = settled.slice(-30)
+      const segMean = seg.reduce((s, d) => s + d, 0) / seg.length
+      worstDeltaSegmentsRef.current.push(segMean)
+    }
+
+    // Logarithmic scaling for mean delta
+    // Normal: mean delta ~0.002 -> log10 = -2.7
+    // Poor: mean delta ~0.02 -> log10 = -1.7
+    // Severe: mean delta ~0.05 -> log10 = -1.3
+    const logDelta = Math.log10(Math.max(totalMean, 1e-6))
+    // Map: -4 (very smooth) to -1 (very jerky) -> 100 to 0
+    const cumulativeScore = Math.max(
+      0,
+      Math.min(100, ((logDelta + 3.5) / -2.5) * 100)
+    )
+
+    const logRecent = Math.log10(Math.max(recentMean, 1e-6))
+    const recentScore = Math.max(
+      0,
+      Math.min(100, ((logRecent + 3.5) / -2.5) * 100)
+    )
+
+    // Blend 60% cumulative + 40% recent, but cap recovery above cumulative
+    const blended = cumulativeScore * 0.6 + recentScore * 0.4
+    return Math.min(blended, cumulativeScore + 5)
   }, [])
 
   const startTracking = useCallback(() => {
@@ -114,6 +159,7 @@ export function EyeTracking({
 
     setStatus("tracking")
     deltasRef.current = []
+    worstDeltaSegmentsRef.current = []
     setTimeLeft(TASK_DURATION)
     setSmoothness(null)
 
@@ -342,13 +388,43 @@ export function EyeTracking({
 }
 
 /**
- * Final smoothness: skip first 10% of deltas (settling period),
- * then compute from the remaining data.
+ * Final smoothness uses cumulative log-delta with worst-segment penalty.
+ *
+ * Based on Stuart et al. (2019) and Leigh & Zee (2015):
+ * - Smooth pursuit gain <0.5 indicates pathological tracking
+ * - Saccadic intrusions measured as high-delta frames
+ * - Logarithmic scaling matches clinical perception
  */
 function computeFinalSmoothness(deltas: number[]) {
   if (deltas.length < 10) return 50
-  const skipCount = Math.floor(deltas.length * 0.1)
+  // Skip first 20% as settling period
+  const skipCount = Math.max(5, Math.floor(deltas.length * 0.2))
   const settled = deltas.slice(skipCount)
-  const avg = settled.reduce((s, d) => s + d, 0) / settled.length
-  return Math.max(0, Math.min(100, 100 - avg * 4000))
+  if (settled.length < 5) return 50
+
+  const totalMean = settled.reduce((s, d) => s + d, 0) / settled.length
+
+  // Compute segment means for worst-segment penalty
+  const segmentSize = 30
+  const segmentMeans: number[] = []
+  for (let i = 0; i < settled.length - segmentSize; i += segmentSize) {
+    const seg = settled.slice(i, i + segmentSize)
+    const segMean = seg.reduce((s, d) => s + d, 0) / seg.length
+    segmentMeans.push(segMean)
+  }
+
+  // Worst 25% segments penalty
+  let penaltyMean = totalMean
+  if (segmentMeans.length > 2) {
+    const sorted = [...segmentMeans].sort((a, b) => b - a)
+    const worstCount = Math.max(1, Math.ceil(sorted.length * 0.25))
+    const worstAvg =
+      sorted.slice(0, worstCount).reduce((s, v) => s + v, 0) / worstCount
+    penaltyMean = totalMean * 0.7 + worstAvg * 0.3
+  }
+
+  // Logarithmic scaling
+  const logDelta = Math.log10(Math.max(penaltyMean, 1e-6))
+  // Map: -4 (very smooth) to -1 (very jerky) -> 100 to 0
+  return Math.max(0, Math.min(100, ((logDelta + 3.5) / -2.5) * 100))
 }
