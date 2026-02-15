@@ -8,6 +8,8 @@ import { ResultsDashboard } from "./results-dashboard"
 import { AssessmentHistory } from "./assessment-history"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
+import { PostResultsActions } from "./post-results-actions"
+import { SendToDoctor } from "./send-to-doctor"
 import {
   Camera,
   CameraOff,
@@ -69,7 +71,7 @@ const STEPS = [
 
 function loadHistory(): StoredAssessment[] {
   try {
-    const stored = localStorage.getItem("neuro-screen-history")
+    const stored = localStorage.getItem("inquire-history")
     return stored ? JSON.parse(stored) : []
   } catch {
     return []
@@ -78,7 +80,7 @@ function loadHistory(): StoredAssessment[] {
 
 function saveHistory(history: StoredAssessment[]) {
   try {
-    localStorage.setItem("neuro-screen-history", JSON.stringify(history))
+    localStorage.setItem("inquire-history", JSON.stringify(history))
   } catch {
     // storage full or unavailable
   }
@@ -256,6 +258,20 @@ export function AssessmentFlow() {
     }
   }, [cameraOn, startCamera])
 
+  const handleContinueFromResults = useCallback(() => {
+    setStep(5)
+  }, [])
+
+  const handleBackToResults = useCallback(() => {
+    setStep(4)
+  }, [])
+
+  const handleSendToDoctor = useCallback(() => {
+    // Will be handled in Task 3 - PDF generation
+    // For now go to a send-to-doctor flow
+    setStep(6)
+  }, [])
+
   const handleViewReport = useCallback((assessment: StoredAssessment) => {
     setSelectedReport(assessment)
     setView("assessment")
@@ -276,15 +292,18 @@ export function AssessmentFlow() {
   )
 
   // Auto-start camera when entering any test step (1-3)
+  // Also poll cameraOn so if camera drops mid-test it restarts
   useEffect(() => {
-    if (view === "assessment" && step >= 1 && step <= 3 && !cameraOn) {
-      startCamera()
+    if (view === "assessment" && step >= 1 && step <= 3) {
+      if (!cameraOn) {
+        startCamera()
+      }
     }
-    // Stop camera when reaching results
-    if (step === 4 && cameraOn) {
+    // Stop camera when reaching results or post-results
+    if (step >= 4 && cameraOn) {
       stopCamera()
     }
-  }, [step, view]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [step, view, cameraOn, startCamera, stopCamera])
 
   // Only show camera panel for active test steps, not results
   const showCamera = step >= 1 && step <= 3 && view === "assessment"
@@ -299,7 +318,7 @@ export function AssessmentFlow() {
           </div>
           <div>
             <h1 className="text-lg font-semibold text-foreground">
-              Neuro Screen
+              Inquire
             </h1>
             <p className="text-xs text-muted-foreground">
               Cognitive Assessment Tool
@@ -511,7 +530,7 @@ export function AssessmentFlow() {
 
                   <Card className="w-full max-w-[480px] border-border bg-card p-6">
                     <h2 className="mb-2 text-xl font-semibold text-foreground text-balance">
-                      Welcome to Neuro Screen
+                      Welcome to Inquire
                     </h2>
                     <p className="mb-4 text-sm text-muted-foreground leading-relaxed">
                       This tool performs a quick cognitive screening through
@@ -564,10 +583,30 @@ export function AssessmentFlow() {
                   <ResultsDashboard
                     results={selectedReport?.results ?? results}
                     onRestart={handleRestart}
+                    onContinue={handleContinueFromResults}
                     onViewHistory={() => setView("history")}
                     allHistory={history}
                   />
                 </div>
+              )}
+
+              {step === 5 && (
+                <PostResultsActions
+                  results={selectedReport?.results ?? results}
+                  allHistory={history}
+                  onRestart={handleRestart}
+                  onViewHistory={() => setView("history")}
+                  onSendToDoctor={handleSendToDoctor}
+                  onBack={handleBackToResults}
+                />
+              )}
+
+              {step === 6 && (
+                <SendToDoctor
+                  results={selectedReport?.results ?? results}
+                  allHistory={history}
+                  onBack={() => setStep(5)}
+                />
               )}
             </div>
           )}

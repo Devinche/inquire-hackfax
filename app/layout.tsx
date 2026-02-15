@@ -7,8 +7,8 @@ const _geist = Geist({ subsets: ['latin'] })
 const _geistMono = Geist_Mono({ subsets: ['latin'] })
 
 export const metadata: Metadata = {
-  title: 'Neuro Screen',
-  description: 'Neurological screening tool with speech, motor, and eye tracking assessments',
+  title: 'Inquire',
+  description: 'Cognitive assessment tool with speech, motor, and eye tracking screenings',
 }
 
 export default function RootLayout({
