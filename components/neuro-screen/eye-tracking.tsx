@@ -287,11 +287,6 @@ export function EyeTracking({
     }
   }, [onComplete])
 
-  const handleRestartFromDone = useCallback(() => {
-    storedResultRef.current = null
-    handleRestart()
-  }, [handleRestart])
-
   const startTracking = useCallback(() => {
     if (!faceLandmarkerRef.current || !videoRef.current || !cameraOn) return
 
@@ -437,6 +432,11 @@ export function EyeTracking({
     gazeOnTargetCountRef.current = 0
     totalFrameCountRef.current = 0
   }, [stopTracking])
+
+  const handleRestartFromDone = useCallback(() => {
+    storedResultRef.current = null
+    handleRestart()
+  }, [handleRestart])
 
   const handleSkipToEnd = useCallback(() => {
     if (status === "tracking") {

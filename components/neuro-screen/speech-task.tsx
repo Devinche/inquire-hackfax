@@ -89,11 +89,6 @@ export function SpeechTask({ onComplete, onSkip }: SpeechTaskProps) {
     }
   }, [onComplete])
 
-  const handleRestartFromDone = useCallback(() => {
-    storedResultRef.current = null
-    handleRestart()
-  }, [handleRestart])
-
   const startRecording = useCallback(async () => {
     stoppedRef.current = false
     allWordsRef.current = []
@@ -204,6 +199,11 @@ export function SpeechTask({ onComplete, onSkip }: SpeechTaskProps) {
     allWordsRef.current = []
     wordCountsRef.current = {}
   }, [cleanup])
+
+  const handleRestartFromDone = useCallback(() => {
+    storedResultRef.current = null
+    handleRestart()
+  }, [handleRestart])
 
   const elapsed = MAX_DURATION - timeLeft
   const progress = (elapsed / MAX_DURATION) * 100

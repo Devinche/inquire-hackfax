@@ -207,11 +207,6 @@ export function HandTracking({
     }
   }, [onComplete])
 
-  const handleRestartFromDone = useCallback(() => {
-    storedResultRef.current = null
-    handleRestart()
-  }, [handleRestart])
-
   const startTracking = useCallback(() => {
     if (!handLandmarkerRef.current || !videoRef.current || !cameraOn) return
 
@@ -296,6 +291,11 @@ export function HandTracking({
     setCountdownValue(3)
     positionsRef.current = []
   }, [stopTracking])
+
+  const handleRestartFromDone = useCallback(() => {
+    storedResultRef.current = null
+    handleRestart()
+  }, [handleRestart])
 
   const handleSkipToEnd = useCallback(() => {
     if (status === "tracking") {
