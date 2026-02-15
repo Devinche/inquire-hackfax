@@ -7,12 +7,33 @@ import { Eye, CheckCircle2, Loader2 } from "lucide-react"
 import { Progress } from "@/components/ui/progress"
 import type { EyeData } from "./assessment-flow"
 
-const TASK_DURATION = 15 // seconds
+const TASK_DURATION = 15
 
 interface EyeTrackingProps {
   videoRef: React.RefObject<HTMLVideoElement | null>
   cameraOn: boolean
   onComplete: (data: EyeData) => void
+}
+
+/**
+ * Suppress MediaPipe's WASM INFO log routed through console.error.
+ */
+function suppressMediaPipeInfo<T>(fn: () => T): T {
+  const origError = console.error
+  console.error = (...args: unknown[]) => {
+    if (
+      typeof args[0] === "string" &&
+      args[0].includes("Created TensorFlow Lite XNNPACK delegate for CPU")
+    ) {
+      return
+    }
+    origError.apply(console, args)
+  }
+  try {
+    return fn()
+  } finally {
+    console.error = origError
+  }
 }
 
 export function EyeTracking({
@@ -34,7 +55,6 @@ export function EyeTracking({
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const dotIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // Load MediaPipe -- no delegate specified, lets MediaPipe pick the best option
   useEffect(() => {
     let cancelled = false
 
@@ -76,10 +96,17 @@ export function EyeTracking({
     }
   }, [])
 
+  /**
+   * Rolling-window smoothness: uses last N deltas so early jitter
+   * from settling doesn't permanently ruin the score.
+   */
   const computeSmoothness = useCallback((deltas: number[]) => {
-    if (deltas.length < 5) return 100
-    const avg = deltas.reduce((s, d) => s + d, 0) / deltas.length
-    return Math.max(0, Math.min(100, 100 - avg * 5000))
+    if (deltas.length < 5) return 50 // neutral start
+    // Use rolling window of last 60 deltas
+    const window = deltas.slice(-60)
+    const avg = window.reduce((s, d) => s + d, 0) / window.length
+    // Softer scaling factor
+    return Math.max(0, Math.min(100, 100 - avg * 4000))
   }, [])
 
   const startTracking = useCallback(() => {
@@ -88,12 +115,13 @@ export function EyeTracking({
     setStatus("tracking")
     deltasRef.current = []
     setTimeLeft(TASK_DURATION)
+    setSmoothness(null)
 
     // Moving dot for user to follow
     dotIntervalRef.current = setInterval(() => {
       setDotPosition({
-        x: 20 + Math.random() * 60,
-        y: 20 + Math.random() * 60,
+        x: 15 + Math.random() * 70,
+        y: 15 + Math.random() * 70,
       })
     }, 2000)
 
@@ -119,11 +147,11 @@ export function EyeTracking({
       lastTime = now
 
       try {
-        const results = landmarker.detectForVideo(video, Math.round(now))
+        const results = suppressMediaPipeInfo(() =>
+          landmarker.detectForVideo(video, Math.round(now))
+        )
         if (results?.faceLandmarks?.length > 0) {
           const landmarks = results.faceLandmarks[0]
-          // Use reliable eye corner landmarks (always present in face mesh):
-          // Left eye inner corner: 133, Right eye inner corner: 362
           const leftEye = landmarks[133]
           const rightEye = landmarks[362]
 
@@ -143,7 +171,7 @@ export function EyeTracking({
             prevY = avgY
           }
 
-          // Draw face mesh landmarks on canvas overlay
+          // Draw face mesh on canvas
           if (canvasRef.current) {
             const ctx = canvasRef.current.getContext("2d")
             if (ctx) {
@@ -156,7 +184,7 @@ export function EyeTracking({
                 ctx.arc(lm.x * w, lm.y * h, 1, 0, 2 * Math.PI)
                 ctx.fill()
               })
-              // Highlight eye landmarks
+              // Highlight tracked eye landmarks
               ctx.fillStyle = "hsl(160, 84%, 39%)"
               ;[133, 362, 33, 263].forEach((idx) => {
                 const lm = landmarks[idx]
@@ -191,7 +219,7 @@ export function EyeTracking({
         if (dotIntervalRef.current) clearInterval(dotIntervalRef.current)
 
         const allDeltas = deltasRef.current
-        const finalSmoothness = computeSmoothness(allDeltas)
+        const finalSmoothness = computeFinalSmoothness(allDeltas)
         const meanDelta =
           allDeltas.length > 0
             ? allDeltas.reduce((s, d) => s + d, 0) / allDeltas.length
@@ -221,9 +249,9 @@ export function EyeTracking({
       <h2 className="mb-1 text-xl font-semibold text-foreground">
         Eye Tracking Task
       </h2>
-      <p className="mb-6 text-sm text-muted-foreground leading-relaxed">
+      <p className="mb-4 text-sm text-muted-foreground leading-relaxed">
         Follow the moving dot with your eyes while keeping your head still. The
-        system will track your eye movements for {TASK_DURATION} seconds.
+        system tracks your eye movements for {TASK_DURATION} seconds.
       </p>
 
       {status === "loading" && (
@@ -262,7 +290,7 @@ export function EyeTracking({
               ref={canvasRef}
               width={640}
               height={480}
-              className="absolute inset-0 h-full w-full opacity-50"
+              className="absolute inset-0 h-full w-full opacity-40"
             />
             <div
               className="absolute h-5 w-5 rounded-full bg-primary shadow-lg shadow-primary/50 transition-all duration-700 ease-in-out"
@@ -279,7 +307,9 @@ export function EyeTracking({
 
           {smoothness !== null && (
             <div className="rounded-lg bg-secondary p-4 text-center">
-              <p className="text-xs text-muted-foreground">Smoothness Score</p>
+              <p className="text-xs text-muted-foreground">
+                Live Smoothness Score
+              </p>
               <p className="text-3xl font-bold text-foreground">
                 {smoothness.toFixed(1)}
               </p>
@@ -309,4 +339,16 @@ export function EyeTracking({
       )}
     </Card>
   )
+}
+
+/**
+ * Final smoothness: skip first 10% of deltas (settling period),
+ * then compute from the remaining data.
+ */
+function computeFinalSmoothness(deltas: number[]) {
+  if (deltas.length < 10) return 50
+  const skipCount = Math.floor(deltas.length * 0.1)
+  const settled = deltas.slice(skipCount)
+  const avg = settled.reduce((s, d) => s + d, 0) / settled.length
+  return Math.max(0, Math.min(100, 100 - avg * 4000))
 }

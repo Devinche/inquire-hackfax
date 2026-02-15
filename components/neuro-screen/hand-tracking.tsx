@@ -7,12 +7,34 @@ import { Hand, CheckCircle2, Loader2 } from "lucide-react"
 import { Progress } from "@/components/ui/progress"
 import type { HandData } from "./assessment-flow"
 
-const TASK_DURATION = 15 // seconds
+const TASK_DURATION = 15
 
 interface HandTrackingProps {
   videoRef: React.RefObject<HTMLVideoElement | null>
   cameraOn: boolean
   onComplete: (data: HandData) => void
+}
+
+/**
+ * Suppress MediaPipe's WASM INFO log ("Created TensorFlow Lite XNNPACK delegate for CPU")
+ * which is routed through console.error by the WASM stderr handler.
+ */
+function suppressMediaPipeInfo<T>(fn: () => T): T {
+  const origError = console.error
+  console.error = (...args: unknown[]) => {
+    if (
+      typeof args[0] === "string" &&
+      args[0].includes("Created TensorFlow Lite XNNPACK delegate for CPU")
+    ) {
+      return // suppress this specific INFO message
+    }
+    origError.apply(console, args)
+  }
+  try {
+    return fn()
+  } finally {
+    console.error = origError
+  }
 }
 
 export function HandTracking({
@@ -31,7 +53,6 @@ export function HandTracking({
   const positionsRef = useRef<Array<{ x: number; y: number }>>([])
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // Load MediaPipe -- no delegate specified so it picks the best available automatically
   useEffect(() => {
     let cancelled = false
 
@@ -70,17 +91,25 @@ export function HandTracking({
     }
   }, [])
 
+  /**
+   * Rolling-window stability computation.
+   * Uses only the last N samples so that early jitter from settling
+   * doesn't permanently anchor the score to 0.
+   */
   const computeStability = useCallback(
     (points: Array<{ x: number; y: number }>) => {
-      if (points.length < 10) return 100
-      const meanX = points.reduce((s, p) => s + p.x, 0) / points.length
-      const meanY = points.reduce((s, p) => s + p.y, 0) / points.length
+      if (points.length < 5) return 50 // neutral start instead of 100 or 0
+      // Use a rolling window of 60 frames (~1s at 60fps)
+      const window = points.slice(-60)
+      const meanX = window.reduce((s, p) => s + p.x, 0) / window.length
+      const meanY = window.reduce((s, p) => s + p.y, 0) / window.length
       const variance =
-        points.reduce(
+        window.reduce(
           (s, p) => s + (p.x - meanX) ** 2 + (p.y - meanY) ** 2,
           0
-        ) / points.length
-      return Math.max(0, Math.min(100, 100 - variance * 10000))
+        ) / window.length
+      // Use a softer scaling factor so scores aren't so extreme
+      return Math.max(0, Math.min(100, 100 - variance * 8000))
     },
     []
   )
@@ -91,6 +120,7 @@ export function HandTracking({
     setStatus("tracking")
     positionsRef.current = []
     setTimeLeft(TASK_DURATION)
+    setStability(null)
 
     let lastTime = -1
     const doneRef = { current: false }
@@ -112,7 +142,9 @@ export function HandTracking({
       lastTime = now
 
       try {
-        const results = landmarker.detectForVideo(video, Math.round(now))
+        const results = suppressMediaPipeInfo(() =>
+          landmarker.detectForVideo(video, Math.round(now))
+        )
         if (results?.landmarks?.length > 0) {
           const wrist = results.landmarks[0][0]
           positionsRef.current.push({ x: wrist.x, y: wrist.y })
@@ -140,9 +172,9 @@ export function HandTracking({
         if (intervalRef.current) clearInterval(intervalRef.current)
 
         const pts = positionsRef.current
-        const finalStability = computeStability(pts)
+        // Final score uses ALL samples for overall assessment
+        const finalStability = computeFinalStability(pts)
 
-        // Compute per-axis variance for detailed results
         let varianceX = 0
         let varianceY = 0
         if (pts.length > 1) {
@@ -159,7 +191,7 @@ export function HandTracking({
           onComplete({
             stability: Math.round(finalStability * 10) / 10,
             samples: pts.length,
-            positions: pts.slice(-300), // keep last 300 for charting
+            positions: pts.slice(-300),
             varianceX,
             varianceY,
           })
@@ -176,7 +208,7 @@ export function HandTracking({
       <h2 className="mb-1 text-xl font-semibold text-foreground">
         Motor Task
       </h2>
-      <p className="mb-6 text-sm text-muted-foreground leading-relaxed">
+      <p className="mb-4 text-sm text-muted-foreground leading-relaxed">
         Hold your hand steady in front of the camera for {TASK_DURATION}{" "}
         seconds. Keep your index finger pointed upward and try not to move.
       </p>
@@ -213,7 +245,9 @@ export function HandTracking({
 
           {stability !== null && (
             <div className="rounded-lg bg-secondary p-4 text-center">
-              <p className="text-xs text-muted-foreground">Stability Score</p>
+              <p className="text-xs text-muted-foreground">
+                Live Stability Score
+              </p>
               <p className="text-3xl font-bold text-foreground">
                 {stability.toFixed(1)}
               </p>
@@ -243,4 +277,22 @@ export function HandTracking({
       )}
     </Card>
   )
+}
+
+/**
+ * Final stability: skip first 10% of samples (settling period),
+ * then use the remaining data for a fair overall score.
+ */
+function computeFinalStability(points: Array<{ x: number; y: number }>) {
+  if (points.length < 10) return 50
+  const skipCount = Math.floor(points.length * 0.1)
+  const settled = points.slice(skipCount)
+  const meanX = settled.reduce((s, p) => s + p.x, 0) / settled.length
+  const meanY = settled.reduce((s, p) => s + p.y, 0) / settled.length
+  const variance =
+    settled.reduce(
+      (s, p) => s + (p.x - meanX) ** 2 + (p.y - meanY) ** 2,
+      0
+    ) / settled.length
+  return Math.max(0, Math.min(100, 100 - variance * 8000))
 }
