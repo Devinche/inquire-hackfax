@@ -25,3 +25,4 @@ data/
 
 # Drizzle
 drizzle/
+.vercel
