@@ -5,13 +5,14 @@ import { createContext, useContext, useState, useEffect, ReactNode } from "react
 interface User {
   id: number
   email: string
+  role: "patient" | "admin"
 }
 
 interface AuthContextType {
   user: User | null
   loading: boolean
-  login: (email: string, password: string) => Promise<void>
-  register: (email: string, password: string) => Promise<void>
+  login: (email: string, password: string, role: "patient" | "admin") => Promise<void>
+  register: (email: string, password: string, role: "patient" | "admin", adminCode?: string) => Promise<void>
   logout: () => Promise<void>
 }
 
@@ -40,11 +41,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  async function login(email: string, password: string) {
+  async function login(email: string, password: string, role: "patient" | "admin") {
     const response = await fetch("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email, password, role }),
     })
 
     if (!response.ok) {
@@ -56,11 +57,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(data.user)
   }
 
-  async function register(email: string, password: string) {
+  async function register(email: string, password: string, role: "patient" | "admin", adminCode?: string) {
     const response = await fetch("/api/auth/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email, password, role, adminCode }),
     })
 
     if (!response.ok) {

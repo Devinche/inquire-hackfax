@@ -700,7 +700,7 @@ export function ResultsDashboard({
               Motor / Hand Stability
             </h3>
             <p className="text-xs text-muted-foreground">
-              Postural tremor assessment via hand tracking
+              Fist-Edge-Palm sequencing task
             </p>
           </div>
           {handSkipped ? (
@@ -748,7 +748,7 @@ export function ResultsDashboard({
               <div className="rounded-lg bg-secondary p-3 text-center">
                 <p className="text-lg font-bold text-foreground">
                   {results.hand
-                    ? `${(results.hand.varianceX * 1000).toFixed(2)} / ${(results.hand.varianceY * 1000).toFixed(2)}`
+                    ? `${(results.hand.varianceX * 1000).toFixed(3)} / ${(results.hand.varianceY * 1000).toFixed(3)}`
                     : "N/A"}
                 </p>
                 <p className="text-xs text-muted-foreground">
@@ -768,7 +768,7 @@ export function ResultsDashboard({
                 </p>
                 <ResponsiveContainer width="100%" height={240}>
                   <ScatterChart
-                    margin={{ top: 10, right: 20, bottom: 20, left: 0 }}
+                    margin={{ top: 10, right: 20, bottom: 35, left: 15 }}
                   >
                     <defs>
                       <radialGradient id="scatterGradient">
@@ -794,13 +794,14 @@ export function ResultsDashboard({
                       axisLine={{ stroke: "hsl(var(--border))", strokeWidth: 2 }}
                       domain={["dataMin - 0.01", "dataMax + 0.01"]}
                       label={{ 
-                        value: 'Horizontal Position', 
-                        position: 'insideBottom',
-                        offset: -10,
+                        value: 'Horizontal Position (normalized)', 
+                        position: 'bottom',
+                        offset: 0,
                         style: { 
                           fill: "hsl(var(--muted-foreground))",
-                          fontSize: 11,
-                          fontWeight: 600
+                          fontSize: 12,
+                          fontWeight: 600,
+                          textAnchor: 'middle'
                         }
                       }}
                     />
@@ -818,13 +819,15 @@ export function ResultsDashboard({
                       domain={["dataMin - 0.01", "dataMax + 0.01"]}
                       reversed
                       label={{ 
-                        value: 'Vertical Position', 
+                        value: 'Vertical Position (normalized)', 
                         angle: -90, 
-                        position: 'insideLeft',
+                        position: 'left',
+                        offset: 10,
                         style: { 
                           fill: "hsl(var(--muted-foreground))",
-                          fontSize: 11,
-                          fontWeight: 600
+                          fontSize: 12,
+                          fontWeight: 600,
+                          textAnchor: 'middle'
                         }
                       }}
                     />
@@ -840,6 +843,12 @@ export function ResultsDashboard({
                         boxShadow: "0 4px 12px rgba(0,0,0,0.1)"
                       }}
                       cursor={{ strokeDasharray: '3 3' }}
+                      formatter={(value: any) => {
+                        if (typeof value === 'number') {
+                          return value.toFixed(3)
+                        }
+                        return value
+                      }}
                     />
                     <Scatter
                       data={handScatterData}
@@ -972,7 +981,7 @@ export function ResultsDashboard({
               <div className="rounded-lg bg-secondary p-3 text-center">
                 <p className="text-lg font-bold text-foreground">
                   {results.eye
-                    ? (results.eye.meanDelta * 1000).toFixed(2)
+                    ? (results.eye.meanDelta * 1000).toFixed(3)
                     : "N/A"}
                 </p>
                 <p className="text-xs text-muted-foreground">
@@ -999,7 +1008,7 @@ export function ResultsDashboard({
                 <ResponsiveContainer width="100%" height={220}>
                   <LineChart
                     data={eyeDeltaData}
-                    margin={{ top: 10, right: 20, bottom: 20, left: 0 }}
+                    margin={{ top: 10, right: 20, bottom: 35, left: 15 }}
                   >
                     <defs>
                       <linearGradient id="lineGradient" x1="0" y1="0" x2="0" y2="1">
@@ -1024,12 +1033,13 @@ export function ResultsDashboard({
                       axisLine={{ stroke: "hsl(var(--border))", strokeWidth: 2 }}
                       label={{
                         value: "Frame Number",
-                        position: "insideBottom",
-                        offset: -10,
+                        position: "bottom",
+                        offset: 0,
                         style: {
                           fill: "hsl(var(--muted-foreground))",
-                          fontSize: 11,
-                          fontWeight: 600
+                          fontSize: 12,
+                          fontWeight: 600,
+                          textAnchor: 'middle'
                         }
                       }}
                     />
@@ -1042,13 +1052,15 @@ export function ResultsDashboard({
                       tickLine={false}
                       axisLine={false}
                       label={{
-                        value: "Movement Delta",
+                        value: "Movement Delta (normalized distance)",
                         angle: -90,
-                        position: "insideLeft",
+                        position: "left",
+                        offset: 10,
                         style: {
                           fill: "hsl(var(--muted-foreground))",
-                          fontSize: 11,
-                          fontWeight: 600
+                          fontSize: 12,
+                          fontWeight: 600,
+                          textAnchor: 'middle'
                         }
                       }}
                     />
@@ -1063,6 +1075,12 @@ export function ResultsDashboard({
                         boxShadow: "0 4px 12px rgba(0,0,0,0.1)"
                       }}
                       cursor={{ stroke: "hsl(var(--chart-3))", strokeWidth: 2, strokeDasharray: '5 5' }}
+                      formatter={(value: any) => {
+                        if (typeof value === 'number') {
+                          return value.toFixed(3)
+                        }
+                        return value
+                      }}
                     />
                     <Line
                       type="monotone"
@@ -1204,7 +1222,7 @@ export function ResultsDashboard({
             </p>
           </div>
           <ResponsiveContainer width="100%" height={240}>
-            <BarChart data={barData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+            <BarChart data={barData} margin={{ top: 10, right: 10, left: 5, bottom: 20 }}>
               <defs>
                 <linearGradient id="barGradient1" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.9} />
@@ -1244,13 +1262,15 @@ export function ResultsDashboard({
                 tickLine={false}
                 axisLine={false}
                 label={{ 
-                  value: 'Score', 
+                  value: 'Score (0-100)', 
                   angle: -90, 
-                  position: 'insideLeft',
+                  position: 'left',
+                  offset: 10,
                   style: { 
                     fill: "hsl(var(--muted-foreground))",
                     fontSize: 12,
-                    fontWeight: 600
+                    fontWeight: 600,
+                    textAnchor: 'middle'
                   }
                 }}
               />
@@ -1264,6 +1284,12 @@ export function ResultsDashboard({
                   boxShadow: "0 4px 12px rgba(0,0,0,0.1)"
                 }}
                 cursor={{ fill: "hsl(var(--accent))", opacity: 0.1 }}
+                formatter={(value: any) => {
+                  if (typeof value === 'number') {
+                    return value.toFixed(1)
+                  }
+                  return value
+                }}
               />
               <Bar 
                 dataKey="score" 

@@ -23,9 +23,11 @@ export function initDb() {
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      email TEXT NOT NULL UNIQUE,
+      email TEXT NOT NULL,
       password_hash TEXT NOT NULL,
-      created_at INTEGER NOT NULL
+      role TEXT NOT NULL DEFAULT 'patient',
+      created_at INTEGER NOT NULL,
+      UNIQUE(email, role)
     );
 
     CREATE TABLE IF NOT EXISTS refresh_tokens (

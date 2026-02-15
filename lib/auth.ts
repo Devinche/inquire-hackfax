@@ -11,6 +11,7 @@ const REFRESH_TOKEN_EXPIRY = "7d"
 export interface JWTPayload {
   userId: number
   email: string
+  role?: "patient" | "admin"
 }
 
 export async function createAccessToken(payload: JWTPayload): Promise<string> {

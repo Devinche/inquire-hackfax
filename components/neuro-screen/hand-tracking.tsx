@@ -49,46 +49,11 @@ interface HandTrackingProps {
 /**
  * Suppress MediaPipe's WASM INFO log ("Created TensorFlow Lite XNNPACK delegate for CPU")
  * which is routed through console.error by the WASM stderr handler.
+ * Note: Global filter in ConsoleFilter component should handle most cases.
  */
 function suppressMediaPipeInfo<T>(fn: () => T): T {
-  const origError = console.error
-  const origInfo = console.info
-  const origLog = console.log
-  
-  console.error = (...args: unknown[]) => {
-    const msg = String(args[0] || '')
-    if (
-      msg.includes("Created TensorFlow Lite XNNPACK delegate for CPU") ||
-      msg.includes("INFO:")
-    ) {
-      return
-    }
-    origError.apply(console, args)
-  }
-  
-  console.info = (...args: unknown[]) => {
-    const msg = String(args[0] || '')
-    if (msg.includes("Created TensorFlow Lite XNNPACK delegate for CPU")) {
-      return
-    }
-    origInfo.apply(console, args)
-  }
-  
-  console.log = (...args: unknown[]) => {
-    const msg = String(args[0] || '')
-    if (msg.includes("Created TensorFlow Lite XNNPACK delegate for CPU")) {
-      return
-    }
-    origLog.apply(console, args)
-  }
-  
-  try {
-    return fn()
-  } finally {
-    console.error = origError
-    console.info = origInfo
-    console.log = origLog
-  }
+  // Just execute the function - global filter handles suppression
+  return fn()
 }
 
 type Pt = { x: number; y: number }
@@ -802,14 +767,14 @@ export function HandTracking({
       : "—"
 
   return (
-    <Card className="border-border bg-card p-6">
-      <div className="mb-1 flex items-center justify-between">
+    <Card className="border-border bg-card p-4">
+      <div className="mb-3 flex items-center justify-between">
         <h2 className="text-xl font-semibold text-foreground">Motor Task</h2>
         {status === "ready" ? (
           <Button
-            variant="ghost"
+            variant="outline"
             size="sm"
-            className="gap-1.5 text-xs text-muted-foreground"
+            className="gap-1.5 text-xs bg-accent text-accent-foreground hover:bg-accent/90 border-accent"
             onClick={handleSkip}
           >
             <SkipForward className="h-3.5 w-3.5" />
@@ -818,21 +783,12 @@ export function HandTracking({
         ) : null}
       </div>
 
-      <p className="mb-4 text-sm text-muted-foreground leading-relaxed">
-        Perform the Luria sequence with your right hand:
-        <br />
-        <span className="font-medium">
-          Fist → Edge (karate chop) → Palm DOWN
-        </span>
-        <br />
-        <span className="text-xs">
-          Palm step = place your hand flat with fingers extended (palm down on
-          table).
-        </span>
+      <p className="mb-3 text-sm text-muted-foreground leading-loose">
+        Perform the Luria sequence with your right hand: Fist → Edge (karate chop) → Palm DOWN. Palm step means place your hand flat with fingers extended (palm down on table).
       </p>
 
       {status === "loading" && (
-        <div className="flex flex-col items-center gap-3 py-4">
+        <div className="flex flex-col items-center gap-2 py-3">
           <Loader2 className="h-8 w-8 animate-spin text-primary" />
           <p className="text-sm text-muted-foreground">
             Loading hand tracking model...
@@ -859,12 +815,12 @@ export function HandTracking({
       )}
 
       {status === "countdown" && (
-        <div className="flex flex-col items-center gap-4 py-8">
+        <div className="flex flex-col items-center gap-3 py-4">
           <p className="text-sm text-muted-foreground">
             Position your hand in front of the camera
           </p>
-          <div className="flex h-24 w-24 items-center justify-center rounded-full border-4 border-primary bg-secondary">
-            <p className="text-4xl font-bold text-primary">{countdownValue}</p>
+          <div className="flex h-20 w-20 items-center justify-center rounded-full border-4 border-primary bg-secondary">
+            <p className="text-3xl font-bold text-primary">{countdownValue}</p>
           </div>
           <p className="text-sm font-medium text-foreground">
             Tracking starts soon
@@ -873,7 +829,7 @@ export function HandTracking({
       )}
 
       {status === "tracking" && (
-        <div className="space-y-4">
+        <div className="space-y-3">
           <div className="flex items-center justify-between text-sm">
             <span className="text-muted-foreground">Time remaining</span>
             <span className="font-mono font-semibold text-foreground">
@@ -884,21 +840,21 @@ export function HandTracking({
           <Progress value={progress} className="h-2" />
 
           {trackingHint && (
-            <div className="flex items-start gap-2 rounded-lg bg-secondary p-3 text-sm text-muted-foreground">
+            <div className="flex items-start gap-2 rounded-lg bg-secondary p-2.5 text-sm text-muted-foreground">
               <AlertTriangle className="mt-0.5 h-4 w-4 text-muted-foreground" />
               <span>{trackingHint}</span>
             </div>
           )}
 
-          <div className="grid grid-cols-2 gap-3">
-            <div className="rounded-lg bg-secondary p-4 text-center">
+          <div className="grid grid-cols-2 gap-2">
+            <div className="rounded-lg bg-secondary p-3 text-center">
               <p className="text-xs text-muted-foreground">Detected pose</p>
               <p className="text-lg font-bold text-foreground">
                 {poseLabel(livePose)}
               </p>
             </div>
 
-            <div className="rounded-lg bg-secondary p-4 text-center">
+            <div className="rounded-lg bg-secondary p-3 text-center">
               <p className="text-xs text-muted-foreground">Next expected</p>
               <p className="text-lg font-bold text-foreground">
                 {poseLabel(expectedPose)}
@@ -906,20 +862,20 @@ export function HandTracking({
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
-            <div className="rounded-lg bg-secondary p-3 text-center">
+          <div className="grid grid-cols-3 gap-2">
+            <div className="rounded-lg bg-secondary p-2.5 text-center">
               <p className="text-[11px] text-muted-foreground">Cycles</p>
               <p className="text-base font-semibold text-foreground">
                 {cyclesDone}/{TARGET_CYCLES}
               </p>
             </div>
-            <div className="rounded-lg bg-secondary p-3 text-center">
+            <div className="rounded-lg bg-secondary p-2.5 text-center">
               <p className="text-[11px] text-muted-foreground">Accuracy</p>
               <p className="text-base font-semibold text-foreground">
                 {accuracy}%
               </p>
             </div>
-            <div className="rounded-lg bg-secondary p-3 text-center">
+            <div className="rounded-lg bg-secondary p-2.5 text-center">
               <p className="text-[11px] text-muted-foreground">Median step</p>
               <p className="text-base font-semibold text-foreground">
                 {medStepLabel}
@@ -928,11 +884,11 @@ export function HandTracking({
           </div>
 
           {sequenceScore !== null && (
-            <div className="rounded-lg bg-secondary p-4 text-center">
+            <div className="rounded-lg bg-secondary p-3 text-center">
               <p className="text-xs text-muted-foreground">
                 Live Sequencing Score
               </p>
-              <p className="text-3xl font-bold text-foreground">
+              <p className="text-2xl font-bold text-foreground">
                 {sequenceScore.toFixed(1)}
               </p>
               <p className="text-xs text-muted-foreground">out of 100</p>

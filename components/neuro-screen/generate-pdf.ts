@@ -228,7 +228,7 @@ export async function generateMedicalPDF(
     checkPage(25)
     doc.setFontSize(10)
     doc.setFont("helvetica", "bold")
-    doc.text("2. Motor / Hand Stability (Postural Tremor)", margin, y)
+    doc.text("2. Motor / Hand Sequencing (Fist-Edge-Palm)", margin, y)
     y += 5
     doc.setFont("helvetica", "normal")
     doc.setFontSize(9)
@@ -335,7 +335,7 @@ export async function generateMedicalPDF(
   const methodology = [
     "Speech: Phonemic fluency test based on the FAS/COWAT paradigm. The patient is asked to name as many words as possible starting with a given letter within 60 seconds. Scoring is based on matching words relative to the normative mean of ~14 words/letter (Tombaugh et al., 1999).",
     "",
-    "Motor: Postural tremor assessment via webcam-based hand tracking using MediaPipe. The patient holds their hand still for 15 seconds. Stability is computed from wrist landmark variance using RMS with a sigmoid scoring function. Median amplitude estimation error is ~5mm (Becktepe et al., 2025).",
+    "Motor: Fist-Edge-Palm sequencing task via webcam-based hand tracking using MediaPipe. The patient performs the Fist-Edge-Palm sequence repeatedly for 15 seconds. Scoring is based on correct hand orientation detection, sequence accuracy, timing consistency, and overall fluency. This task assesses motor planning and executive function.",
     "",
     "Eye: Smooth pursuit assessment via webcam-based face landmark tracking using MediaPipe FaceLandmarker. The patient follows a moving dot for 15 seconds. Smoothness is computed from frame-to-frame gaze position deltas using iris-relative coordinates.",
     "",

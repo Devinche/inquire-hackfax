@@ -3,16 +3,16 @@ import { hash } from "bcryptjs"
 import { db } from "@/lib/db"
 import { users } from "@/lib/db/schema"
 import { createAccessToken, createRefreshToken, setAuthCookies } from "@/lib/auth"
-import { eq } from "drizzle-orm"
+import { eq, and } from "drizzle-orm"
 
 export async function POST(request: NextRequest) {
   try {
-    const { email, password } = await request.json()
+    const { email, password, role, adminCode } = await request.json()
 
     // Validate input
-    if (!email || !password) {
+    if (!email || !password || !role) {
       return NextResponse.json(
-        { error: "Email and password are required" },
+        { error: "Email, password, and role are required" },
         { status: 400 }
       )
     }
@@ -24,16 +24,34 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Check if user already exists
+    if (role !== "patient" && role !== "admin") {
+      return NextResponse.json(
+        { error: "Invalid role" },
+        { status: 400 }
+      )
+    }
+
+    // Validate admin code if registering as admin
+    if (role === "admin") {
+      const validAdminCode = process.env.ADMIN_CODE || "sclosh"
+      if (!adminCode || adminCode !== validAdminCode) {
+        return NextResponse.json(
+          { error: "Invalid admin code" },
+          { status: 403 }
+        )
+      }
+    }
+
+    // Check if user with this email and role already exists
     const existingUser = await db
       .select()
       .from(users)
-      .where(eq(users.email, email))
+      .where(and(eq(users.email, email), eq(users.role, role)))
       .limit(1)
 
     if (existingUser.length > 0) {
       return NextResponse.json(
-        { error: "User already exists" },
+        { error: `${role === "admin" ? "Admin" : "Patient"} account with this email already exists` },
         { status: 409 }
       )
     }
@@ -47,6 +65,7 @@ export async function POST(request: NextRequest) {
       .values({
         email,
         passwordHash,
+        role,
       })
       .returning()
 
@@ -54,11 +73,13 @@ export async function POST(request: NextRequest) {
     const accessToken = await createAccessToken({
       userId: newUser.id,
       email: newUser.email,
+      role: newUser.role,
     })
 
     const refreshToken = await createRefreshToken({
       userId: newUser.id,
       email: newUser.email,
+      role: newUser.role,
     })
 
     // Set cookies
@@ -69,6 +90,7 @@ export async function POST(request: NextRequest) {
       user: {
         id: newUser.id,
         email: newUser.email,
+        role: newUser.role,
       },
     })
   } catch (error) {

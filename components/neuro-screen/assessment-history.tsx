@@ -5,6 +5,16 @@ import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import {
   LineChart,
   Line,
   XAxis,
@@ -32,6 +42,7 @@ interface AssessmentHistoryProps {
   history: StoredAssessment[]
   onViewReport: (assessment: StoredAssessment) => void
   onDelete: (id: string) => void
+  onDeleteMultiple?: (ids: string[]) => void
   onNewAssessment: () => void
   onSendToDoctor?: (selectedAssessments: StoredAssessment[]) => void
 }
@@ -77,10 +88,15 @@ export function AssessmentHistory({
   history,
   onViewReport,
   onDelete,
+  onDeleteMultiple,
   onNewAssessment,
   onSendToDoctor,
 }: AssessmentHistoryProps) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const [assessmentToDelete, setAssessmentToDelete] = useState<string | null>(null)
+  const [assessmentsToDelete, setAssessmentsToDelete] = useState<string[]>([])
+  const [deleteCount, setDeleteCount] = useState(1)
   
   const toggleSelection = (id: string) => {
     const newSelected = new Set(selectedIds)
@@ -105,6 +121,47 @@ export function AssessmentHistory({
       const selected = history.filter(a => selectedIds.has(a.id))
       onSendToDoctor(selected)
     }
+  }
+  
+  const handleDeleteClick = (id: string) => {
+    setAssessmentToDelete(id)
+    setAssessmentsToDelete([])
+    setDeleteCount(1)
+    setDeleteDialogOpen(true)
+  }
+  
+  const handleDeleteSelected = () => {
+    if (selectedIds.size === 0) return
+    const idsArray = Array.from(selectedIds)
+    setAssessmentsToDelete(idsArray)
+    setAssessmentToDelete(null)
+    setDeleteCount(idsArray.length)
+    setDeleteDialogOpen(true)
+  }
+  
+  const handleConfirmDelete = () => {
+    if (assessmentsToDelete.length > 0) {
+      // Bulk delete
+      if (onDeleteMultiple) {
+        onDeleteMultiple(assessmentsToDelete)
+      } else {
+        // Fallback: delete one by one
+        assessmentsToDelete.forEach(id => onDelete(id))
+      }
+      setSelectedIds(new Set()) // Clear selection after bulk delete
+      setAssessmentsToDelete([])
+    } else if (assessmentToDelete) {
+      // Single delete
+      onDelete(assessmentToDelete)
+      setAssessmentToDelete(null)
+    }
+    setDeleteDialogOpen(false)
+  }
+  
+  const handleCancelDelete = () => {
+    setAssessmentToDelete(null)
+    setAssessmentsToDelete([])
+    setDeleteDialogOpen(false)
   }
   
   // Compute statistics across all attempts
@@ -150,7 +207,7 @@ export function AssessmentHistory({
 
   if (history.length === 0) {
     return (
-      <div className="flex flex-col items-center gap-4 py-12">
+      <div className="flex flex-col items-center gap-4 py-12 animate-in fade-in slide-in-from-bottom-8 duration-500">
         <BarChart3 className="h-16 w-16 text-muted-foreground/40" />
         <div className="text-center">
           <h2 className="text-lg font-semibold text-foreground">
@@ -172,7 +229,7 @@ export function AssessmentHistory({
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between animate-in fade-in slide-in-from-top-4 duration-500">
         <div>
           <h2 className="text-xl font-semibold text-foreground">
             Assessment History
@@ -198,6 +255,16 @@ export function AssessmentHistory({
               Send to Doctor ({selectedIds.size})
             </Button>
           )}
+          {selectedIds.size > 0 && (
+            <Button 
+              variant="outline" 
+              className="gap-2 text-destructive border-destructive hover:bg-destructive hover:text-destructive-foreground"
+              onClick={handleDeleteSelected}
+            >
+              <Trash2 className="h-4 w-4" />
+              Delete ({selectedIds.size})
+            </Button>
+          )}
           <Button className="gap-2" onClick={onNewAssessment}>
             <Plus className="h-4 w-4" />
             New Assessment
@@ -207,7 +274,7 @@ export function AssessmentHistory({
 
       {/* Aggregate statistics */}
       {stats && (
-        <Card className="border-border bg-card p-6">
+        <Card className="border-border bg-card p-6 animate-in fade-in slide-in-from-bottom-6 duration-500 delay-100">
           <h3 className="mb-4 text-sm font-semibold text-foreground">
             Aggregate Statistics
           </h3>
@@ -275,14 +342,14 @@ export function AssessmentHistory({
 
       {/* Trend chart */}
       {trendData.length >= 2 && (
-        <Card className="border-border bg-card p-6">
+        <Card className="border-border bg-card p-6 animate-in fade-in slide-in-from-bottom-6 duration-500 delay-200">
           <h3 className="mb-4 text-sm font-semibold text-foreground">
             Score Trends Over Time
           </h3>
           <ResponsiveContainer width="100%" height={240}>
             <LineChart
               data={trendData}
-              margin={{ top: 5, right: 10, bottom: 5, left: 10 }}
+              margin={{ top: 5, right: 10, bottom: 30, left: 15 }}
             >
               <CartesianGrid
                 strokeDasharray="3 3"
@@ -294,12 +361,35 @@ export function AssessmentHistory({
                   fill: "hsl(var(--muted-foreground))",
                   fontSize: 11,
                 }}
+                label={{
+                  value: "Assessment Date",
+                  position: "bottom",
+                  offset: 0,
+                  style: {
+                    fill: "hsl(var(--muted-foreground))",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    textAnchor: 'middle'
+                  }
+                }}
               />
               <YAxis
                 domain={[0, 100]}
                 tick={{
                   fill: "hsl(var(--muted-foreground))",
                   fontSize: 11,
+                }}
+                label={{
+                  value: "Score (0-100)",
+                  angle: -90,
+                  position: "left",
+                  offset: 10,
+                  style: {
+                    fill: "hsl(var(--muted-foreground))",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    textAnchor: 'middle'
+                  }
                 }}
               />
               <Tooltip
@@ -309,6 +399,12 @@ export function AssessmentHistory({
                   borderRadius: "8px",
                   color: "hsl(var(--foreground))",
                   fontSize: 12,
+                }}
+                formatter={(value: any) => {
+                  if (typeof value === 'number') {
+                    return value.toFixed(1)
+                  }
+                  return value
                 }}
               />
               <Line
@@ -369,7 +465,7 @@ export function AssessmentHistory({
       )}
 
       {/* Assessment list */}
-      <div className="space-y-3">
+      <div className="space-y-3 animate-in fade-in slide-in-from-bottom-6 duration-500 delay-300">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-semibold text-foreground">
             Past Assessments
@@ -403,10 +499,10 @@ export function AssessmentHistory({
           return (
             <Card
               key={assessment.id}
-              className={`border-border bg-card p-4 transition-all ${
+              className={`border-border bg-card p-4 transition-all duration-300 ${
                 isSelected 
-                  ? 'ring-2 ring-primary bg-primary/5' 
-                  : 'hover:bg-secondary/50'
+                  ? 'ring-2 ring-primary bg-primary/5 shadow-lg' 
+                  : 'hover:bg-secondary/50 hover:shadow-md'
               }`}
             >
               <div className="flex items-center gap-4">
@@ -482,7 +578,7 @@ export function AssessmentHistory({
                     variant="ghost"
                     size="sm"
                     className="text-muted-foreground hover:text-destructive"
-                    onClick={() => onDelete(assessment.id)}
+                    onClick={() => handleDeleteClick(assessment.id)}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
@@ -492,6 +588,26 @@ export function AssessmentHistory({
           )
         })}
       </div>
+      
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Delete {deleteCount === 1 ? 'Assessment' : `${deleteCount} Assessments`}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete {deleteCount === 1 ? 'this assessment' : `these ${deleteCount} assessments`}? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={handleCancelDelete}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleConfirmDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

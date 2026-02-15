@@ -17,7 +17,19 @@ import {
   History,
   ChevronLeft,
   CameraOff,
+  User,
+  LogOut,
+  ChevronDown,
+  Database,
 } from "lucide-react"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 
 export interface SpeechData {
   duration: number
@@ -87,7 +99,13 @@ function saveHistory(history: StoredAssessment[]) {
   }
 }
 
-export function AssessmentFlow() {
+interface AssessmentFlowProps {
+  userEmail?: string
+  userRole?: "patient" | "admin"
+  onLogout?: () => void
+}
+
+export function AssessmentFlow({ userEmail, userRole, onLogout }: AssessmentFlowProps = {}) {
   const [step, setStep] = useState(0)
   const [cameraOn, setCameraOn] = useState(false)
   const [cameraError, setCameraError] = useState<string | null>(null)
@@ -203,22 +221,38 @@ export function AssessmentFlow() {
     setCameraOn(false)
   }, [])
 
-  const startRecording = useCallback(() => {
+  const startRecording = useCallback(async () => {
     if (!streamRef.current) return
     
     try {
       recordedChunksRef.current = []
       
+      // Get audio stream separately
+      let audioStream: MediaStream | null = null
+      try {
+        audioStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+      } catch (err) {
+        console.warn("Could not access microphone:", err)
+        // Continue without audio if mic access fails
+      }
+      
+      // Combine video and audio tracks
+      const tracks = [...streamRef.current.getTracks()]
+      if (audioStream) {
+        tracks.push(...audioStream.getAudioTracks())
+      }
+      const combinedStream = new MediaStream(tracks)
+      
       // Try different codecs in order of preference
-      let mimeType = 'video/webm;codecs=vp9'
+      let mimeType = 'video/webm;codecs=vp9,opus'
       if (!MediaRecorder.isTypeSupported(mimeType)) {
-        mimeType = 'video/webm;codecs=vp8'
+        mimeType = 'video/webm;codecs=vp8,opus'
       }
       if (!MediaRecorder.isTypeSupported(mimeType)) {
         mimeType = 'video/webm'
       }
       
-      const mediaRecorder = new MediaRecorder(streamRef.current, { mimeType })
+      const mediaRecorder = new MediaRecorder(combinedStream, { mimeType })
       
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
@@ -456,6 +490,20 @@ export function AssessmentFlow() {
     },
     [history, selectedReport]
   )
+  
+  const handleDeleteMultipleAssessments = useCallback(
+    (ids: string[]) => {
+      const idsSet = new Set(ids)
+      const newHistory = history.filter((a) => !idsSet.has(a.id))
+      setHistory(newHistory)
+      saveHistory(newHistory)
+      if (selectedReport && idsSet.has(selectedReport.id)) {
+        setSelectedReport(null)
+        setView("history")
+      }
+    },
+    [history, selectedReport]
+  )
 
   // Auto-start camera when entering any test step (1-3)
   // Also poll cameraOn so if camera drops mid-test it restarts
@@ -493,15 +541,25 @@ export function AssessmentFlow() {
       {/* Header */}
       <header className="flex items-center justify-between border-b border-border px-4 py-3 sm:px-6 sm:py-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary">
-            <Brain className="h-5 w-5 text-primary-foreground" />
-          </div>
-          <div>
-            <h1 className="text-lg font-semibold text-foreground">Inquire</h1>
-            <p className="text-xs text-muted-foreground">
-              Cognitive Assessment Tool
-            </p>
-          </div>
+          <button 
+            onClick={handleRestart}
+            className="group cursor-pointer transition-transform hover:scale-110"
+          >
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary transition-all group-hover:shadow-lg group-hover:shadow-primary/50">
+              <Brain className="h-5 w-5 text-primary-foreground" />
+            </div>
+          </button>
+          {/* Hide text on welcome page (step === 0) */}
+          {step !== 0 && (
+            <div>
+              <h1 className="text-lg font-semibold text-foreground">
+                Inquire
+              </h1>
+              <p className="text-xs text-muted-foreground">
+                Cognitive Assessment Tool
+              </p>
+            </div>
+          )}
         </div>
 
         {/* Step indicators -- desktop only */}
@@ -531,23 +589,71 @@ export function AssessmentFlow() {
         )}
 
         <div className="flex items-center gap-2">
-          {/* History toggle */}
-          <Button
-            variant={view === "history" ? "default" : "outline"}
-            size="sm"
-            className="gap-2"
-            onClick={() => {
-              if (view === "history") {
-                setView("assessment")
-                if (step < 4) setSelectedReport(null)
-              } else {
-                setView("history")
-              }
-            }}
-          >
-            <History className="h-4 w-4" />
-            <span className="hidden sm:inline">History ({history.length})</span>
-          </Button>
+          {/* Combined Menu Dropdown */}
+          {userEmail && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  className="gap-2 transition-all hover:scale-105 hover:shadow-md hover:border-primary hover:bg-primary hover:text-primary-foreground"
+                >
+                  <User className="h-4 w-4" />
+                  <span className="hidden sm:inline max-w-[120px] truncate">
+                    {userEmail}
+                  </span>
+                  <ChevronDown className="h-3 w-3" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56">
+                <DropdownMenuLabel>Account</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem disabled className="text-xs text-muted-foreground">
+                  {userEmail}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                
+                {/* History option - only show if at least one assessment completed */}
+                {history.length > 0 && (
+                  <>
+                    <DropdownMenuItem 
+                      onClick={() => {
+                        if (view === "history") {
+                          setView("assessment")
+                          if (step < 4) setSelectedReport(null)
+                        } else {
+                          setView("history")
+                        }
+                      }}
+                      className="cursor-pointer hover:bg-primary hover:text-primary-foreground focus:bg-primary focus:text-primary-foreground"
+                    >
+                      <History className="mr-2 h-4 w-4" />
+                      Assessment History
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
+                
+                {/* Admin Dashboard - only show for admin users */}
+                {userRole === "admin" && (
+                  <>
+                    <DropdownMenuItem asChild>
+                      <a href="/admin" className="cursor-pointer hover:bg-primary hover:text-primary-foreground focus:bg-primary focus:text-primary-foreground">
+                        <Database className="mr-2 h-4 w-4" />
+                        Admin Dashboard
+                      </a>
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
+                
+                <DropdownMenuItem onClick={onLogout} className="text-destructive focus:text-destructive cursor-pointer hover:bg-destructive hover:text-destructive-foreground focus:bg-destructive focus:text-destructive-foreground">
+                  <LogOut className="mr-2 h-4 w-4" />
+                  Logout
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
       </header>
 
@@ -559,6 +665,7 @@ export function AssessmentFlow() {
               history={history}
               onViewReport={handleViewReport}
               onDelete={handleDeleteAssessment}
+              onDeleteMultiple={handleDeleteMultipleAssessments}
               onNewAssessment={handleRestart}
               onSendToDoctor={handleSendSelectedToDoctor}
             />
@@ -571,9 +678,9 @@ export function AssessmentFlow() {
         <main className="flex flex-1 flex-col items-center p-4 sm:p-6">
           {/* Side-by-side layout: camera + task on larger screens */}
           {showCamera ? (
-            <div className="flex w-full max-w-5xl flex-col gap-4 lg:flex-row">
+            <div className="flex w-full max-w-6xl flex-col gap-4 lg:flex-row">
               {/* Camera */}
-              <div className="w-full shrink-0 lg:w-[360px] animate-in fade-in slide-in-from-left-8 duration-500">
+              <div className="w-full shrink-0 lg:w-[480px] animate-in fade-in slide-in-from-left-8 duration-500">
                 <Card className="sticky top-4 overflow-hidden border-border bg-card">
                   <div className="relative aspect-[4/3] w-full bg-secondary">
                     <video
@@ -663,36 +770,34 @@ export function AssessmentFlow() {
               />
 
               {step === 0 && (
-                <div className="flex flex-col items-center gap-6">
+                <div className="flex flex-col items-center gap-4">
                   {/* Smooth animations for all components */}
-                  <div className="flex flex-col items-center gap-4 py-12 animate-in fade-in slide-in-from-bottom-8 duration-1000 delay-100">
+                  <div className="flex flex-col items-center gap-3 py-6 animate-in fade-in slide-in-from-bottom-8 duration-1000 delay-100">
                     <div className="relative">
                       <div className="absolute inset-0 rounded-full bg-primary/10 animate-pulse" style={{ animationDuration: '3s' }} />
-                      <div className="relative flex h-24 w-24 items-center justify-center rounded-full bg-primary shadow-lg">
-                        <Brain className="h-12 w-12 text-primary-foreground" />
+                      <div className="relative flex h-20 w-20 items-center justify-center rounded-full bg-primary shadow-lg">
+                        <Brain className="h-10 w-10 text-primary-foreground" />
                       </div>
                     </div>
-                    <h1 className="text-4xl font-bold text-foreground">
+                    <h1 className="text-3xl font-bold text-foreground">
                       Inquire
                     </h1>
-                    <p className="text-lg text-muted-foreground">
+                    <p className="text-base text-muted-foreground">
                       Cognitive Assessment Tool
                     </p>
                   </div>
 
                   {/* Smooth animation for welcome card */}
-                  <Card className="w-full max-w-[480px] border-border bg-card p-6 animate-in slide-in-from-bottom-12 fade-in duration-1000 delay-[1600ms]">
-                    <h2 className="mb-2 text-xl font-semibold text-foreground text-balance">
+                  <Card className="w-full max-w-[480px] border-border bg-card p-5 animate-in slide-in-from-bottom-12 fade-in duration-1000 delay-[1600ms]">
+                    <h2 className="mb-2 text-lg font-semibold text-foreground text-balance">
                       Welcome to Your Assessment
                     </h2>
-                    <p className="mb-4 text-sm text-muted-foreground leading-relaxed">
-                      This tool performs a quick cognitive screening through
-                      three short tasks. Make sure you are in a well-lit environment
-                      and ready to begin.
+                    <p className="mb-3 text-sm text-muted-foreground leading-relaxed">
+                      This tool performs a quick cognitive screening through three short tasks. Make sure you are in a well-lit environment and ready to begin.
                     </p>
                     
                     {cameraError && (
-                      <div className="mb-4 rounded-lg bg-destructive/10 border border-destructive/20 p-3 flex items-start gap-2">
+                      <div className="mb-3 rounded-lg bg-destructive/10 border border-destructive/20 p-3 flex items-start gap-2">
                         <CameraOff className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
                         <div className="text-sm">
                           <p className="font-medium text-destructive mb-1">Camera Access Required</p>
@@ -701,7 +806,16 @@ export function AssessmentFlow() {
                       </div>
                     )}
                     
-                    <div className="flex flex-col gap-2 text-sm text-muted-foreground">
+                    <div className="mb-3 rounded-lg bg-primary/5 border border-primary/20 p-2.5">
+                      <p className="text-xs text-muted-foreground leading-relaxed">
+                        <span className="font-medium text-foreground">Navigation tip:</span> Click the Inquire logo in the top-left corner anytime to return to this welcome screen.
+                        {history.length > 0 && (
+                          <span> Access your past assessments from the menu in the top-right corner.</span>
+                        )}
+                      </p>
+                    </div>
+                    
+                    <div className="flex flex-col gap-1.5 text-sm text-muted-foreground mb-4">
                       <div className="flex items-center gap-2">
                         <div className="h-1.5 w-1.5 rounded-full bg-primary" />
                         Speech: Say words starting with a letter (60s)
@@ -716,7 +830,7 @@ export function AssessmentFlow() {
                       </div>
                     </div>
                     <Button
-                      className="mt-6 w-full"
+                      className="w-full"
                       onClick={handleNext}
                       disabled={!!cameraError}
                     >

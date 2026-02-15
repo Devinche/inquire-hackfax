@@ -29,7 +29,7 @@ export function PostResultsActions({
   return (
     <div className="flex flex-col items-center gap-6">
       {/* Back button */}
-      <div className="w-full max-w-lg">
+      <div className="w-full max-w-lg animate-in fade-in slide-in-from-left-4 duration-300">
         <Button
           variant="ghost"
           size="sm"
@@ -42,7 +42,7 @@ export function PostResultsActions({
       </div>
 
       {/* Heading */}
-      <div className="text-center">
+      <div className="text-center animate-in fade-in slide-in-from-bottom-6 duration-500 delay-100">
         <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-primary/10">
           <Brain className="h-8 w-8 text-primary" />
         </div>
@@ -56,12 +56,12 @@ export function PostResultsActions({
       </div>
 
       {/* Action cards */}
-      <div className="grid w-full max-w-lg gap-4 sm:grid-cols-3">
+      <div className="grid w-full max-w-lg gap-4 sm:grid-cols-3 animate-in fade-in slide-in-from-bottom-8 duration-500 delay-300">
         <button
           onClick={onRestart}
-          className="flex flex-col items-center gap-3 rounded-xl border border-border bg-card p-6 text-center transition-colors hover:border-primary hover:bg-primary/5"
+          className="flex flex-col items-center gap-3 rounded-xl border border-border bg-card p-6 text-center transition-all hover:border-primary hover:bg-primary/5 hover:scale-105"
         >
-          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-primary/10">
+          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 transition-transform group-hover:scale-110">
             <RotateCcw className="h-6 w-6 text-primary" />
           </div>
           <div>
@@ -76,9 +76,9 @@ export function PostResultsActions({
 
         <button
           onClick={onViewHistory}
-          className="flex flex-col items-center gap-3 rounded-xl border border-border bg-card p-6 text-center transition-colors hover:border-accent hover:bg-accent/5"
+          className="flex flex-col items-center gap-3 rounded-xl border border-border bg-card p-6 text-center transition-all hover:border-accent hover:bg-accent/5 hover:scale-105"
         >
-          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-accent/10">
+          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-accent/10 transition-transform group-hover:scale-110">
             <History className="h-6 w-6 text-accent" />
           </div>
           <div>
@@ -93,9 +93,9 @@ export function PostResultsActions({
 
         <button
           onClick={onSendToDoctor}
-          className="flex flex-col items-center gap-3 rounded-xl border border-border bg-card p-6 text-center transition-colors hover:border-primary hover:bg-primary/5"
+          className="flex flex-col items-center gap-3 rounded-xl border border-border bg-card p-6 text-center transition-all hover:border-primary hover:bg-primary/5 hover:scale-105"
         >
-          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-primary/10">
+          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 transition-transform group-hover:scale-110">
             <Send className="h-6 w-6 text-primary" />
           </div>
           <div>

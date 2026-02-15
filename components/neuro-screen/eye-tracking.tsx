@@ -24,66 +24,15 @@ interface EyeTrackingProps {
 
 /**
  * Suppress MediaPipe's WASM INFO log routed through console.error.
+ * Note: Global filter in ConsoleFilter component should handle most cases.
  */
 function suppressMediaPipeInfo<T>(fn: () => T): T {
-  const origError = console.error
-  const origInfo = console.info
-  const origLog = console.log
-  
-  console.error = (...args: unknown[]) => {
-    const msg = String(args[0] || '')
-    if (
-      msg.includes("Created TensorFlow Lite XNNPACK delegate for CPU") ||
-      msg.includes("INFO:")
-    ) {
-      return
-    }
-    origError.apply(console, args)
-  }
-  
-  console.info = (...args: unknown[]) => {
-    const msg = String(args[0] || '')
-    if (msg.includes("Created TensorFlow Lite XNNPACK delegate for CPU")) {
-      return
-    }
-    origInfo.apply(console, args)
-  }
-  
-  console.log = (...args: unknown[]) => {
-    const msg = String(args[0] || '')
-    if (msg.includes("Created TensorFlow Lite XNNPACK delegate for CPU")) {
-      return
-    }
-    origLog.apply(console, args)
-  }
-  
-  try {
-    return fn()
-  } finally {
-    console.error = origError
-    console.info = origInfo
-    console.log = origLog
-  }
+  // Just execute the function - global filter handles suppression
+  return fn()
 }
 
 /**
  * Compute RELATIVE gaze direction from iris landmarks.
- *
- * KEY INSIGHT: We compute where the iris sits WITHIN the eye socket (relative to
- * the eye corners), NOT the absolute position of the iris in the camera frame.
- * This means head movement does NOT affect the gaze reading -- only actual eye
- * movement (looking left/right/up/down) changes the output.
- *
- * For each eye:
- *   gazeX = (iris.x - outerCorner.x) / (innerCorner.x - outerCorner.x)
- *     => 0.0 = looking fully outer, 0.5 = center, 1.0 = looking fully inner
- *   gazeY = (iris.y - topLid.y) / (bottomLid.y - topLid.y)
- *     => 0.0 = looking up, 0.5 = center, 1.0 = looking down
- *
- * We average both eyes and map the result to 0-1 screen space.
- *
- * Works with glasses because lens refraction shifts iris AND eye corners
- * roughly equally, so the relative position is preserved.
  */
 function getGazePosition(
   landmarks: Array<{ x: number; y: number; z: number }>
@@ -95,14 +44,14 @@ function getGazePosition(
   // Left eye corners and lids
   const leftOuter = landmarks[33]
   const leftInner = landmarks[133]
-  const leftTop = landmarks[159]    // upper eyelid center
-  const leftBottom = landmarks[145] // lower eyelid center
+  const leftTop = landmarks[159]
+  const leftBottom = landmarks[145]
 
   // Right eye corners and lids
   const rightInner = landmarks[362]
   const rightOuter = landmarks[263]
-  const rightTop = landmarks[386]    // upper eyelid center
-  const rightBottom = landmarks[374] // lower eyelid center
+  const rightTop = landmarks[386]
+  const rightBottom = landmarks[374]
 
   if (
     leftIris && rightIris &&
@@ -116,21 +65,17 @@ function getGazePosition(
 
     if (leftEyeWidth > 0.001 && rightEyeWidth > 0.001 &&
         leftEyeHeight > 0.001 && rightEyeHeight > 0.001) {
-      // Iris position relative to eye socket (0 = outer/top, 1 = inner/bottom)
       const leftRelX = (leftIris.x - leftOuter.x) / leftEyeWidth
       const leftRelY = (leftIris.y - leftTop.y) / leftEyeHeight
       const rightRelX = (rightIris.x - rightInner.x) / rightEyeWidth
       const rightRelY = (rightIris.y - rightTop.y) / rightEyeHeight
 
-      // Average both eyes for stability (cancels asymmetric noise/glasses distortion)
       const gazeRelX = (leftRelX + rightRelX) / 2
       const gazeRelY = (leftRelY + rightRelY) / 2
 
-      // Map to 0-1 screen space: center of eye (0.5 relative) -> 0.5 screen
-      // Amplify to make gaze direction actually map across screen area
-      // Eyes typically move iris 0.3-0.7 relative within the socket
-      const screenX = 0.5 + (gazeRelX - 0.5) * 2.5
-      const screenY = 0.5 + (gazeRelY - 0.5) * 2.0
+      // Amplification for better responsiveness
+      const screenX = 0.5 + (gazeRelX - 0.5) * 5.0
+      const screenY = 0.5 + (gazeRelY - 0.5) * 4.5
 
       return {
         x: Math.max(0, Math.min(1, screenX)),
@@ -140,14 +85,13 @@ function getGazePosition(
     }
   }
 
-  // Fallback: try just eye corners (works with thick glasses that occlude iris)
+  // Fallback
   if (leftOuter && leftInner && rightOuter && rightInner && leftTop && rightTop && leftBottom && rightBottom) {
-    // Use eye openness ratio as a proxy for vertical gaze
     const leftOpenness = Math.abs(leftBottom.y - leftTop.y) / (Math.abs(leftInner.x - leftOuter.x) || 0.001)
     const rightOpenness = Math.abs(rightBottom.y - rightTop.y) / (Math.abs(rightOuter.x - rightInner.x) || 0.001)
     const avgOpenness = (leftOpenness + rightOpenness) / 2
     return {
-      x: 0.5, // can't determine horizontal gaze without iris
+      x: 0.5,
       y: Math.max(0, Math.min(1, 0.5 + (avgOpenness - 0.3) * 2)),
       confidence: "medium",
     }
@@ -175,12 +119,16 @@ export function EyeTracking({
   const faceLandmarkerRef = useRef<any>(null)
   const rafRef = useRef<number | null>(null)
   const deltasRef = useRef<number[]>([])
+  const positionErrorsRef = useRef<number[]>([])
+  const velocityGainsRef = useRef<number[]>([])
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const dotIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const doneRef = useRef(false)
   const gazeOnTargetCountRef = useRef(0)
   const totalFrameCountRef = useRef(0)
   const currentDotRef = useRef({ x: 50, y: 50 })
+  const previousGazeRef = useRef({ x: 0.5, y: 0.5, time: 0 })
+  const previousDotRef = useRef({ x: 50, y: 50, time: 0 })
 
   useEffect(() => {
     let cancelled = false
@@ -228,36 +176,57 @@ export function EyeTracking({
   }, [])
 
   /**
-   * Smoothness score using RMS of frame-to-frame deltas with improved parameters.
+   * Improved smoothness scoring using multiple metrics:
+   * 1. Position error (distance from target)
+   * 2. Pursuit gain (eye velocity / target velocity)
+   * 3. Movement smoothness (RMS of deltas)
    * 
-   * Improvements:
-   * - More realistic thresholds based on actual eye movement patterns
-   * - Better handling of saccades vs smooth pursuit
-   * - More forgiving for natural eye jitter
+   * Based on clinical smooth pursuit assessment research:
+   * - Normal pursuit gain: 0.7-0.9 for horizontal movements
+   * - Position error should be minimal (<15% of screen)
+   * - Smooth movements with minimal saccades
    */
-  const computeSmoothness = useCallback((deltas: number[]) => {
+  const computeFinalScore = useCallback((
+    deltas: number[],
+    positionErrors: number[],
+    velocityGains: number[]
+  ) => {
     if (deltas.length < 10) return 50
 
-    // Skip first 20% as settling
+    // Skip first 20% as settling period
     const skipCount = Math.max(5, Math.floor(deltas.length * 0.2))
-    const settled = deltas.slice(skipCount)
-    if (settled.length < 5) return 50
+    const settledDeltas = deltas.slice(skipCount)
+    const settledErrors = positionErrors.slice(skipCount)
+    const settledGains = velocityGains.slice(skipCount)
+    
+    if (settledDeltas.length < 5) return 50
 
-    // RMS of deltas
+    // 1. Smoothness score (40% weight) - RMS of movement deltas
     const rms = Math.sqrt(
-      settled.reduce((s, d) => s + d * d, 0) / settled.length
+      settledDeltas.reduce((s, d) => s + d * d, 0) / settledDeltas.length
+    )
+    // Sigmoid: lower RMS = higher score
+    const smoothnessScore = 100 / (1 + Math.exp(100 * (rms - 0.025)))
+
+    // 2. Position accuracy score (35% weight) - mean distance from target
+    const meanError = settledErrors.reduce((s, e) => s + e, 0) / settledErrors.length
+    // Sigmoid: lower error = higher score (threshold at 0.20 = 20% of screen)
+    const accuracyScore = 100 / (1 + Math.exp(25 * (meanError - 0.20)))
+
+    // 3. Pursuit gain score (25% weight) - how well eye velocity matches target velocity
+    const meanGain = settledGains.reduce((s, g) => s + g, 0) / settledGains.length
+    // Optimal gain is 0.75-0.85, score peaks there
+    const gainDeviation = Math.abs(meanGain - 0.80)
+    const gainScore = 100 / (1 + Math.exp(15 * (gainDeviation - 0.15)))
+
+    // Weighted combination
+    const finalScore = (
+      smoothnessScore * 0.40 +
+      accuracyScore * 0.35 +
+      gainScore * 0.25
     )
 
-    // Improved sigmoid scoring
-    // More forgiving for natural eye movements
-    //   RMS ~0.003 -> ~95 (very smooth)
-    //   RMS ~0.008 -> ~85 (smooth, normal)
-    //   RMS ~0.015 -> ~70 (acceptable)
-    //   RMS ~0.025 -> ~50 (mild irregularity)
-    //   RMS ~0.040 -> ~30 (moderate issues)
-    const k = 150 // steepness
-    const midpoint = 0.018 // more forgiving midpoint
-    return Math.max(0, Math.min(100, 100 / (1 + Math.exp(k * (rms - midpoint)))))
+    return Math.max(0, Math.min(100, finalScore))
   }, [])
 
   const stopTracking = useCallback(() => {
@@ -274,7 +243,11 @@ export function EyeTracking({
       stopTracking()
 
       const allDeltas = deltasRef.current
-      const rawSmoothness = skipped ? 0 : computeFinalSmoothness(allDeltas)
+      const allErrors = positionErrorsRef.current
+      const allGains = velocityGainsRef.current
+      
+      const rawSmoothness = skipped ? 0 : computeFinalScore(allDeltas, allErrors, allGains)
+      
       const meanDelta =
         allDeltas.length > 0
           ? allDeltas.reduce((s, d) => s + d, 0) / allDeltas.length
@@ -287,12 +260,18 @@ export function EyeTracking({
             )
           : 0
 
-      // Factor gazeOnTarget into score with improved weighting
-      // If gaze was on target less than 50% of the time, apply a penalty
+      // Apply gaze-on-target modifier (less aggressive than before)
       let finalSmoothness = rawSmoothness
-      if (!skipped && gazeOnTarget < 50) {
-        const gazePenalty = 0.6 + (gazeOnTarget / 50) * 0.4
-        finalSmoothness = rawSmoothness * gazePenalty
+      if (!skipped) {
+        if (gazeOnTarget < 30) {
+          // Significant penalty for very poor tracking
+          const gazePenalty = 0.6 + (gazeOnTarget / 30) * 0.4
+          finalSmoothness = rawSmoothness * gazePenalty
+        } else if (gazeOnTarget >= 70) {
+          // Small bonus for excellent tracking
+          const gazeBonus = 1.0 + Math.min(0.10, (gazeOnTarget - 70) / 300)
+          finalSmoothness = Math.min(100, rawSmoothness * gazeBonus)
+        }
       }
 
       const result: EyeData = {
@@ -310,7 +289,7 @@ export function EyeTracking({
       setSmoothness(finalSmoothness)
       setStatus("done")
     },
-    [stopTracking, restartCount]
+    [stopTracking, restartCount, computeFinalScore]
   )
 
   const handleContinue = useCallback(() => {
@@ -325,6 +304,8 @@ export function EyeTracking({
     doneRef.current = false
     setStatus("tracking")
     deltasRef.current = []
+    positionErrorsRef.current = []
+    velocityGainsRef.current = []
     gazeOnTargetCountRef.current = 0
     totalFrameCountRef.current = 0
     setTimeLeft(TASK_DURATION)
@@ -335,12 +316,17 @@ export function EyeTracking({
     const newDot = { x: 50, y: 50 }
     setDotPosition(newDot)
     currentDotRef.current = newDot
+    previousDotRef.current = { x: 50, y: 50, time: performance.now() }
+    previousGazeRef.current = { x: 0.5, y: 0.5, time: performance.now() }
+    
     dotIntervalRef.current = setInterval(() => {
+      const currentTime = performance.now()
       const dp = {
         x: 15 + Math.random() * 70,
         y: 15 + Math.random() * 70,
       }
       setDotPosition(dp)
+      previousDotRef.current = { ...currentDotRef.current, time: currentTime }
       currentDotRef.current = dp
     }, 2000)
 
@@ -373,29 +359,68 @@ export function EyeTracking({
 
           // Use robust gaze detection that works with glasses
           const gaze = getGazePosition(landmarks)
+          const currentTime = now
 
           if (prevX !== null && prevY !== null) {
+            // Calculate movement delta for smoothness
             const delta = Math.sqrt(
               (gaze.x - prevX) ** 2 + (gaze.y - prevY) ** 2
             )
             deltasRef.current.push(delta)
-            const currentSmoothness = computeSmoothness(deltasRef.current)
+            
+            // Calculate position error (distance from target)
+            const dotX = currentDotRef.current.x / 100
+            const dotY = currentDotRef.current.y / 100
+            const positionError = Math.sqrt(
+              (gaze.x - dotX) ** 2 + (gaze.y - dotY) ** 2
+            )
+            positionErrorsRef.current.push(positionError)
+            
+            // Calculate pursuit gain (eye velocity / target velocity)
+            const timeDelta = (currentTime - previousGazeRef.current.time) / 1000 // seconds
+            if (timeDelta > 0.001) {
+              // Eye velocity
+              const eyeVelocity = Math.sqrt(
+                Math.pow((gaze.x - previousGazeRef.current.x) / timeDelta, 2) +
+                Math.pow((gaze.y - previousGazeRef.current.y) / timeDelta, 2)
+              )
+              
+              // Target velocity
+              const targetVelocity = Math.sqrt(
+                Math.pow((currentDotRef.current.x - previousDotRef.current.x) / timeDelta / 100, 2) +
+                Math.pow((currentDotRef.current.y - previousDotRef.current.y) / timeDelta / 100, 2)
+              )
+              
+              // Pursuit gain (clamped to reasonable range)
+              if (targetVelocity > 0.01) { // Only calculate when target is moving
+                const gain = Math.min(2.0, eyeVelocity / targetVelocity)
+                velocityGainsRef.current.push(gain)
+              }
+            }
+            
+            const currentSmoothness = computeFinalScore(
+              deltasRef.current,
+              positionErrorsRef.current,
+              velocityGainsRef.current
+            )
             setSmoothness(currentSmoothness)
           }
+          
+          // Update previous values
           prevX = gaze.x
           prevY = gaze.y
+          previousGazeRef.current = { x: gaze.x, y: gaze.y, time: currentTime }
 
           // Check if gaze direction is roughly toward the dot
-          // Improved threshold based on actual tracking capabilities
           totalFrameCountRef.current++
           const dotX = currentDotRef.current.x / 100
           const dotY = currentDotRef.current.y / 100
           const gazeDist = Math.sqrt(
             (gaze.x - dotX) ** 2 + (gaze.y - dotY) ** 2
           )
-          // More realistic threshold (20% of screen) for iris-relative gaze
-          // Accounts for webcam tracking limitations while still being meaningful
-          const isOnTarget = gazeDist < 0.20
+          // Very forgiving threshold (30% of screen) for better user experience
+          // Accounts for webcam tracking limitations and natural eye movement
+          const isOnTarget = gazeDist < 0.30
           if (isOnTarget) gazeOnTargetCountRef.current++
           setGazeOnDot(isOnTarget)
 
@@ -447,7 +472,7 @@ export function EyeTracking({
         finishTest(false)
       }
     }, 250)
-  }, [videoRef, cameraOn, computeSmoothness, finishTest])
+  }, [videoRef, cameraOn, computeFinalScore, finishTest])
 
   const handleRestart = useCallback(() => {
     stopTracking()
@@ -476,16 +501,16 @@ export function EyeTracking({
   const progress = (elapsed / TASK_DURATION) * 100
 
   return (
-    <Card className="border-border bg-card p-6">
-      <div className="mb-1 flex items-center justify-between">
+    <Card className="border-border bg-card p-4">
+      <div className="mb-3 flex items-center justify-between">
         <h2 className="text-xl font-semibold text-foreground">
           Eye Tracking Task
         </h2>
         {status === "ready" ? (
           <Button
-            variant="ghost"
+            variant="outline"
             size="sm"
-            className="gap-1.5 text-xs text-muted-foreground"
+            className="gap-1.5 text-xs bg-accent text-accent-foreground hover:bg-accent/90 border-accent"
             onClick={onSkip}
           >
             <SkipForward className="h-3.5 w-3.5" />
@@ -493,17 +518,12 @@ export function EyeTracking({
           </Button>
         ) : null}
       </div>
-      <p className="mb-2 text-sm text-muted-foreground leading-relaxed">
-        Follow the moving dot with your eyes while keeping your head still. The
-        system tracks your eye movements for {TASK_DURATION} seconds.
-      </p>
-      <p className="mb-4 text-xs text-muted-foreground">
-        Works with glasses -- the tracking uses multiple eye reference points
-        for accuracy even through lenses.
+      <p className="mb-3 text-sm text-muted-foreground leading-loose">
+        Follow the moving dot with your eyes while keeping your head still. The system tracks your eye movements for {TASK_DURATION} seconds. Works with glasses -- the tracking uses multiple eye reference points for accuracy even through lenses.
       </p>
 
       {status === "loading" && (
-        <div className="flex flex-col items-center gap-3 py-4">
+        <div className="flex flex-col items-center gap-2 py-3">
           <Loader2 className="h-8 w-8 animate-spin text-primary" />
           <p className="text-sm text-muted-foreground">
             Loading face tracking model...
@@ -530,7 +550,7 @@ export function EyeTracking({
       )}
 
       {status === "tracking" && (
-        <div className="space-y-4">
+        <div className="space-y-3">
           <div className="flex items-center justify-between text-sm">
             <span className="text-muted-foreground">Time remaining</span>
             <span className="font-mono font-semibold text-foreground">
@@ -547,9 +567,9 @@ export function EyeTracking({
               height={480}
               className="absolute inset-0 h-full w-full opacity-40"
             />
-            {/* The dot */}
+            {/* The dot - larger and more visible */}
             <div
-              className="absolute h-5 w-5 rounded-full shadow-lg transition-all duration-700 ease-in-out"
+              className="absolute h-8 w-8 rounded-full shadow-lg transition-all duration-700 ease-in-out"
               style={{
                 left: `${dotPosition.x}%`,
                 top: `${dotPosition.y}%`,
@@ -558,8 +578,8 @@ export function EyeTracking({
                   ? "hsl(var(--accent))"
                   : "hsl(var(--primary))",
                 boxShadow: gazeOnDot
-                  ? "0 0 12px hsl(var(--accent) / 0.6)"
-                  : "0 0 12px hsl(var(--primary) / 0.5)",
+                  ? "0 0 20px hsl(var(--accent) / 0.8), 0 0 40px hsl(var(--accent) / 0.4)"
+                  : "0 0 20px hsl(var(--primary) / 0.6), 0 0 40px hsl(var(--primary) / 0.3)",
               }}
             />
             {/* Gaze on target indicator */}
@@ -583,11 +603,11 @@ export function EyeTracking({
           </div>
 
           {smoothness !== null && (
-            <div className="rounded-lg bg-secondary p-4 text-center">
+            <div className="rounded-lg bg-secondary p-3 text-center">
               <p className="text-xs text-muted-foreground">
                 Live Smoothness Score
               </p>
-              <p className="text-3xl font-bold text-foreground">
+              <p className="text-2xl font-bold text-foreground">
                 {smoothness.toFixed(1)}
               </p>
               <p className="text-xs text-muted-foreground">out of 100</p>

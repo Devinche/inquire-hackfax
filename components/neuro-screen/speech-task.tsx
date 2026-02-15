@@ -216,14 +216,14 @@ export function SpeechTask({ onComplete, onSkip }: SpeechTaskProps) {
   ).length
 
   return (
-    <Card className="border-border bg-card p-6">
-      <div className="mb-1 flex items-center justify-between">
+    <Card className="border-border bg-card p-4">
+      <div className="mb-3 flex items-center justify-between">
         <h2 className="text-xl font-semibold text-foreground">Speech Task</h2>
         {status === "idle" ? (
           <Button
-            variant="ghost"
+            variant="outline"
             size="sm"
-            className="gap-1.5 text-xs text-muted-foreground"
+            className="gap-1.5 text-xs bg-accent text-accent-foreground hover:bg-accent/90 border-accent"
             onClick={onSkip}
           >
             <SkipForward className="h-3.5 w-3.5" />
@@ -231,16 +231,14 @@ export function SpeechTask({ onComplete, onSkip }: SpeechTaskProps) {
           </Button>
         ) : null}
       </div>
-      <p className="mb-6 text-sm text-muted-foreground leading-relaxed">
-        Say as many words as you can that start with the letter shown below. You
-        have 60 seconds, but you can stop early. Based on the phonemic verbal
-        fluency test (FAS) used in neuropsychological assessments.
+      <p className="mb-3 text-sm text-muted-foreground leading-loose">
+        Say as many words as you can that start with the letter shown below. You have 60 seconds, but you can stop early. Based on the phonemic verbal fluency test (FAS) used in neuropsychological assessments.
       </p>
 
       {/* Letter display */}
-      <div className="mb-6 flex flex-col items-center">
-        <div className="flex h-24 w-24 items-center justify-center rounded-2xl bg-primary">
-          <span className="text-5xl font-bold text-primary-foreground">
+      <div className="mb-4 flex flex-col items-center">
+        <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-primary shadow-lg transition-transform hover:scale-105">
+          <span className="text-4xl font-bold text-primary-foreground">
             {letter}
           </span>
         </div>
@@ -278,7 +276,7 @@ export function SpeechTask({ onComplete, onSkip }: SpeechTaskProps) {
           <Progress value={progress} className="h-2" />
 
           {/* Live word count and transcript */}
-          <div className="rounded-lg bg-secondary p-4">
+          <div className="rounded-lg bg-secondary p-4 min-h-[120px] max-h-[200px] overflow-y-auto">
             <div className="mb-2 flex items-center justify-between">
               <p className="text-xs font-medium text-muted-foreground">
                 Words captured
@@ -322,7 +320,7 @@ export function SpeechTask({ onComplete, onSkip }: SpeechTaskProps) {
               </div>
             )}
             {liveTranscript && (
-              <p className="mt-2 text-xs text-muted-foreground italic">
+              <p className="mt-2 text-xs text-muted-foreground italic truncate">
                 {liveTranscript}...
               </p>
             )}

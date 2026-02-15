@@ -6,11 +6,22 @@ __v0_jsx-dev-runtime.ts
 # Common ignores
 node_modules/
 .next/
-.env*.local
 .DS_Store
+
+# Environment variables
+.env
+.env*.local
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
 
 # Database
 data/
 *.db
 *.db-shm
 *.db-wal
+*.db.backup
+
+# Drizzle
+drizzle/

@@ -83,23 +83,39 @@ export default function AdminPage() {
 
         {/* Recent Users */}
         <Card className="mb-8 p-6">
-          <h2 className="mb-4 text-xl font-semibold">Recent Users</h2>
+          <h2 className="mb-4 text-xl font-semibold">Recent Users (Last 5)</h2>
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
                 <tr className="border-b">
                   <th className="pb-2 text-left">ID</th>
                   <th className="pb-2 text-left">Email</th>
+                  <th className="pb-2 text-left">Role</th>
                   <th className="pb-2 text-left">Created At</th>
                 </tr>
               </thead>
               <tbody>
-                {users.map((user) => (
+                {users.slice(0, 5).map((user) => (
                   <tr key={user.id} className="border-b">
                     <td className="py-2">{user.id}</td>
                     <td className="py-2">{user.email}</td>
                     <td className="py-2">
-                      {new Date(user.createdAt).toLocaleString()}
+                      <span className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${
+                        (user as any).role === "admin" 
+                          ? "bg-primary/10 text-primary" 
+                          : "bg-secondary text-secondary-foreground"
+                      }`}>
+                        {(user as any).role || "patient"}
+                      </span>
+                    </td>
+                    <td className="py-2">
+                      {new Date(user.createdAt).toLocaleString("en-US", {
+                        year: "numeric",
+                        month: "short",
+                        day: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
                     </td>
                   </tr>
                 ))}
@@ -110,27 +126,29 @@ export default function AdminPage() {
 
         {/* Recent Assessments */}
         <Card className="p-6">
-          <h2 className="mb-4 text-xl font-semibold">Recent Assessments</h2>
+          <h2 className="mb-4 text-xl font-semibold">Recent Assessments (Last 5)</h2>
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
                 <tr className="border-b">
                   <th className="pb-2 text-left">ID</th>
                   <th className="pb-2 text-left">User ID</th>
-                  <th className="pb-2 text-left">Assessment Date</th>
-                  <th className="pb-2 text-left">Created At</th>
+                  <th className="pb-2 text-left">Assessment Taken</th>
                 </tr>
               </thead>
               <tbody>
-                {assessments.map((assessment) => (
+                {assessments.slice(0, 5).map((assessment) => (
                   <tr key={assessment.id} className="border-b">
                     <td className="py-2">{assessment.id}</td>
                     <td className="py-2">{assessment.userId}</td>
                     <td className="py-2">
-                      {new Date(assessment.timestamp).toLocaleString()}
-                    </td>
-                    <td className="py-2">
-                      {new Date(assessment.createdAt).toLocaleString()}
+                      {new Date(assessment.timestamp).toLocaleString("en-US", {
+                        year: "numeric",
+                        month: "short",
+                        day: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
                     </td>
                   </tr>
                 ))}

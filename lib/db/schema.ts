@@ -1,13 +1,16 @@
-import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core"
+import { sqliteTable, text, integer, uniqueIndex } from "drizzle-orm/sqlite-core"
 
 export const users = sqliteTable("users", {
   id: integer("id").primaryKey({ autoIncrement: true }),
-  email: text("email").notNull().unique(),
+  email: text("email").notNull(),
   passwordHash: text("password_hash").notNull(),
+  role: text("role", { enum: ["patient", "admin"] }).notNull().default("patient"),
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()
     .$defaultFn(() => new Date()),
-})
+}, (table) => ({
+  emailRoleIdx: uniqueIndex("email_role_idx").on(table.email, table.role),
+}))
 
 export const refreshTokens = sqliteTable("refresh_tokens", {
   id: integer("id").primaryKey({ autoIncrement: true }),

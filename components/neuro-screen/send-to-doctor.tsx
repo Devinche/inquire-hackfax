@@ -77,7 +77,7 @@ export function SendToDoctor({
   return (
     <div className="flex flex-col items-center gap-6">
       {/* Back button */}
-      <div className="w-full max-w-lg">
+      <div className="w-full max-w-lg animate-in fade-in slide-in-from-left-4 duration-300">
         <Button
           variant="ghost"
           size="sm"
@@ -90,7 +90,7 @@ export function SendToDoctor({
       </div>
 
       {/* Heading */}
-      <div className="text-center">
+      <div className="text-center animate-in fade-in slide-in-from-bottom-6 duration-500 delay-100">
         <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-primary/10">
           <FileText className="h-8 w-8 text-primary" />
         </div>
@@ -104,7 +104,7 @@ export function SendToDoctor({
       </div>
 
       {/* Form */}
-      <Card className="w-full max-w-lg border-border bg-card p-6">
+      <Card className="w-full max-w-lg border-border bg-card p-6 animate-in fade-in slide-in-from-bottom-8 duration-500 delay-300">
         <div className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">

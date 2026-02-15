@@ -16,6 +16,7 @@ export async function GET() {
       user: {
         id: session.userId,
         email: session.email,
+        role: session.role || "patient",
       },
     })
   } catch (error) {

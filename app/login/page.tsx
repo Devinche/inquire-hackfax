@@ -6,11 +6,14 @@ import { useAuth } from "@/lib/auth-context"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card } from "@/components/ui/card"
+import { Label } from "@/components/ui/label"
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import Link from "next/link"
 
 export default function LoginPage() {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
+  const [role, setRole] = useState<"patient" | "admin">("patient")
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(false)
   const { login } = useAuth()
@@ -22,7 +25,15 @@ export default function LoginPage() {
     setLoading(true)
 
     try {
-      await login(email, password)
+      // Validate email format
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+      if (!emailRegex.test(email)) {
+        setError("Please enter a valid email address")
+        setLoading(false)
+        return
+      }
+
+      await login(email, password, role)
       router.push("/")
     } catch (err: any) {
       setError(err.message)
@@ -44,8 +55,9 @@ export default function LoginPage() {
           )}
 
           <div>
-            <label className="mb-2 block text-sm font-medium">Email</label>
+            <Label htmlFor="email" className="mb-2 block text-sm font-medium">Email</Label>
             <Input
+              id="email"
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
@@ -55,14 +67,29 @@ export default function LoginPage() {
           </div>
 
           <div>
-            <label className="mb-2 block text-sm font-medium">Password</label>
+            <Label htmlFor="password" className="mb-2 block text-sm font-medium">Password</Label>
             <Input
+              id="password"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
               placeholder="••••••••"
             />
+          </div>
+
+          <div>
+            <Label className="mb-3 block text-sm font-medium">Login as</Label>
+            <RadioGroup value={role} onValueChange={(value) => setRole(value as "patient" | "admin")}>
+              <div className="flex items-center space-x-2">
+                <RadioGroupItem value="patient" id="patient" />
+                <Label htmlFor="patient" className="cursor-pointer font-normal">Patient</Label>
+              </div>
+              <div className="flex items-center space-x-2">
+                <RadioGroupItem value="admin" id="admin" />
+                <Label htmlFor="admin" className="cursor-pointer font-normal">Admin</Label>
+              </div>
+            </RadioGroup>
           </div>
 
           <Button type="submit" className="w-full" disabled={loading}>

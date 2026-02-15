@@ -3,25 +3,25 @@ import { compare } from "bcryptjs"
 import { db } from "@/lib/db"
 import { users } from "@/lib/db/schema"
 import { createAccessToken, createRefreshToken, setAuthCookies } from "@/lib/auth"
-import { eq } from "drizzle-orm"
+import { eq, and } from "drizzle-orm"
 
 export async function POST(request: NextRequest) {
   try {
-    const { email, password } = await request.json()
+    const { email, password, role } = await request.json()
 
     // Validate input
-    if (!email || !password) {
+    if (!email || !password || !role) {
       return NextResponse.json(
-        { error: "Email and password are required" },
+        { error: "Email, password, and role are required" },
         { status: 400 }
       )
     }
 
-    // Find user
+    // Find user with matching email and role
     const [user] = await db
       .select()
       .from(users)
-      .where(eq(users.email, email))
+      .where(and(eq(users.email, email), eq(users.role, role)))
       .limit(1)
 
     if (!user) {
@@ -45,11 +45,13 @@ export async function POST(request: NextRequest) {
     const accessToken = await createAccessToken({
       userId: user.id,
       email: user.email,
+      role: user.role,
     })
 
     const refreshToken = await createRefreshToken({
       userId: user.id,
       email: user.email,
+      role: user.role,
     })
 
     // Set cookies
@@ -60,6 +62,7 @@ export async function POST(request: NextRequest) {
       user: {
         id: user.id,
         email: user.email,
+        role: user.role,
       },
     })
   } catch (error) {
