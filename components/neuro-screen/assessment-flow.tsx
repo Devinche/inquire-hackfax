@@ -7,424 +7,47 @@ import {
   Hand,
   CheckCircle2,
   Loader2,
-  RotateCcw,
   SkipForward,
-  AlertTriangle,
+  RotateCcw,
 } from "lucide-react"
 import { Progress } from "@/components/ui/progress"
 import type { HandData } from "./assessment-flow"
 
-/**
- * Luria Fist–Edge–Palm (motor sequencing)
- *
- * IMPORTANT: "PALM" step here means PALM DOWN on a surface (fingers extended),
- * not "palm facing camera".
- *
- * Functionality preserved:
- * - Sequencing + scoring logic (accuracy, completion, speed, perseveration penalty, coverage factor)
- * - MediaPipe tracking loop
- * - Optional overlay drawing via overlayCanvasRef
- *
- * UI adapted to teammate’s version:
- * - 3-second countdown
- * - Restart button
- * - Finish early button
- * - Cleaner "done" state UI (note: assessment-flow will typically advance immediately onComplete)
- */
-
 const TASK_DURATION = 15
-const TARGET_CYCLES = 3
-
-const DEBOUNCE_FRAMES_DEFAULT = 6
-const DEBOUNCE_FRAMES_PALM = 6
-const COOLDOWN_MS = 250
-
-const IDEAL_STEP_TIME_MS_MIN = 450
-const IDEAL_STEP_TIME_MS_MAX = 1600
-const STUCK_THRESHOLD_MS = 2200
-
-// Orientation thresholds (tune if needed)
-const EDGE_NX_MIN = 0.55 // higher => stricter EDGE
-const PALM_NY_MIN = 0.55 // higher => stricter PALM DOWN
-const DOMINANCE_MARGIN = 0.08 // must beat the other axis by this margin
 
 interface HandTrackingProps {
   videoRef: React.RefObject<HTMLVideoElement | null>
   cameraOn: boolean
   onComplete: (data: HandData) => void
-  mirrored?: boolean
-  overlayCanvasRef?: React.RefObject<HTMLCanvasElement | null>
-}
-
-/**
- * Suppress MediaPipe's WASM INFO log ("Created TensorFlow Lite XNNPACK delegate for CPU")
- * which is routed through console.error by the WASM stderr handler.
- */
-function suppressMediaPipeInfo<T>(fn: () => T): T {
-  const origError = console.error
-  console.error = (...args: unknown[]) => {
-    if (
-      typeof args[0] === "string" &&
-      args[0].includes("Created TensorFlow Lite XNNPACK delegate for CPU")
-    ) {
-      return
-    }
-    origError.apply(console, args)
-  }
-  try {
-    return fn()
-  } finally {
-    console.error = origError
-  }
-}
-
-type Pt = { x: number; y: number }
-type MPPoint = { x: number; y: number; z?: number }
-type Pose = "FIST" | "EDGE" | "PALM" | "UNKNOWN"
-
-function clamp(n: number, lo: number, hi: number) {
-  return Math.max(lo, Math.min(hi, n))
-}
-
-function maybeMirrorX(x: number, mirrored: boolean) {
-  return mirrored ? 1 - x : x
-}
-
-function mean(arr: number[]) {
-  if (!arr.length) return 0
-  return arr.reduce((s, v) => s + v, 0) / arr.length
-}
-
-function variance(arr: number[]) {
-  if (arr.length < 2) return 0
-  const m = mean(arr)
-  return arr.reduce((s, v) => s + (v - m) ** 2, 0) / arr.length
-}
-
-function median(arr: number[]) {
-  if (!arr.length) return 0
-  const a = [...arr].sort((x, y) => x - y)
-  const mid = Math.floor(a.length / 2)
-  return a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2
-}
-
-function dist(a: Pt, b: Pt) {
-  return Math.hypot(a.x - b.x, a.y - b.y)
-}
-
-function poseLabel(p: Pose) {
-  switch (p) {
-    case "FIST":
-      return "Fist ✊"
-    case "EDGE":
-      return "Edge ✋ (karate chop)"
-    case "PALM":
-      return "Palm DOWN 🖐️⬇️"
-    default:
-      return "…"
-  }
-}
-
-function nextPose(p: Exclude<Pose, "UNKNOWN">): Exclude<Pose, "UNKNOWN"> {
-  if (p === "FIST") return "EDGE"
-  if (p === "EDGE") return "PALM"
-  return "FIST"
-}
-
-function drawHandOverlay(
-  ctx: CanvasRenderingContext2D,
-  canvas: HTMLCanvasElement,
-  landmarks: Array<{ x: number; y: number }>,
-  width: number,
-  height: number
-) {
-  ctx.clearRect(0, 0, canvas.width, canvas.height)
-
-  if (canvas.width !== width || canvas.height !== height) {
-    canvas.width = width
-    canvas.height = height
-  }
-
-  const connections: Array<[number, number]> = [
-    [0, 1],
-    [1, 2],
-    [2, 3],
-    [3, 4],
-    [0, 5],
-    [5, 6],
-    [6, 7],
-    [7, 8],
-    [0, 9],
-    [9, 10],
-    [10, 11],
-    [11, 12],
-    [0, 13],
-    [13, 14],
-    [14, 15],
-    [15, 16],
-    [0, 17],
-    [17, 18],
-    [18, 19],
-    [19, 20],
-    [5, 9],
-    [9, 13],
-    [13, 17],
-  ]
-
-  ctx.lineWidth = 2
-  ctx.strokeStyle = "rgba(34, 197, 94, 0.9)"
-  ctx.beginPath()
-  for (const [a, b] of connections) {
-    const pa = landmarks[a]
-    const pb = landmarks[b]
-    if (!pa || !pb) continue
-    ctx.moveTo(pa.x * width, pa.y * height)
-    ctx.lineTo(pb.x * width, pb.y * height)
-  }
-  ctx.stroke()
-
-  for (let i = 0; i < landmarks.length; i++) {
-    const p = landmarks[i]
-    const x = p.x * width
-    const y = p.y * height
-    const isTip = i === 4 || i === 8 || i === 12 || i === 16 || i === 20
-    const r = isTip ? 5 : 3
-    ctx.fillStyle = isTip
-      ? "rgba(59, 130, 246, 0.95)"
-      : "rgba(255, 255, 255, 0.9)"
-    ctx.beginPath()
-    ctx.arc(x, y, r, 0, Math.PI * 2)
-    ctx.fill()
-  }
-}
-
-/**
- * Compute palm-plane normal component ratios from 3D landmarks.
- * Returns {nxRatio, nyRatio, nzRatio} or null if z is unavailable.
- */
-function palmNormalRatios(lm: MPPoint[], mirrored: boolean) {
-  const z0 = lm[0].z
-  const z5 = lm[5].z
-  const z17 = lm[17].z
-  if (
-    typeof z0 !== "number" ||
-    typeof z5 !== "number" ||
-    typeof z17 !== "number"
-  ) {
-    return null
-  }
-
-  const p0 = { x: maybeMirrorX(lm[0].x, mirrored), y: lm[0].y, z: z0 }
-  const p5 = { x: maybeMirrorX(lm[5].x, mirrored), y: lm[5].y, z: z5 }
-  const p17 = { x: maybeMirrorX(lm[17].x, mirrored), y: lm[17].y, z: z17 }
-
-  const v1 = { x: p5.x - p0.x, y: p5.y - p0.y, z: p5.z - p0.z }
-  const v2 = { x: p17.x - p0.x, y: p17.y - p0.y, z: p17.z - p0.z }
-
-  const nx = v1.y * v2.z - v1.z * v2.y
-  const ny = v1.z * v2.x - v1.x * v2.z
-  const nz = v1.x * v2.y - v1.y * v2.x
-
-  const norm = Math.hypot(nx, ny, nz)
-  if (norm < 1e-6) return null
-
-  return {
-    nxRatio: Math.abs(nx) / norm,
-    nyRatio: Math.abs(ny) / norm,
-    nzRatio: Math.abs(nz) / norm,
-  }
-}
-
-/**
- * Robust pose classifier for the Luria task:
- * - FIST: low extension + tips close to palm center
- * - EDGE: open-ish hand where palm normal points mostly +/-X (nxRatio high)
- * - PALM DOWN: open hand where palm normal points mostly +/-Y (nyRatio high)
- *
- * If z missing, falls back to a weaker 2D heuristic.
- */
-function classifyPose(lm: MPPoint[], mirrored: boolean): Pose {
-  if (!lm || lm.length < 21) return "UNKNOWN"
-
-  const wrist2: Pt = { x: maybeMirrorX(lm[0].x, mirrored), y: lm[0].y }
-  const indexMcp2: Pt = { x: maybeMirrorX(lm[5].x, mirrored), y: lm[5].y }
-  const middleMcp2: Pt = { x: maybeMirrorX(lm[9].x, mirrored), y: lm[9].y }
-  const ringMcp2: Pt = { x: maybeMirrorX(lm[13].x, mirrored), y: lm[13].y }
-  const pinkyMcp2: Pt = { x: maybeMirrorX(lm[17].x, mirrored), y: lm[17].y }
-
-  const palmSize = Math.max(dist(wrist2, middleMcp2), 1e-4)
-  const palmWidth2D = dist(indexMcp2, pinkyMcp2) / palmSize
-
-  const fingerExtended = (mcpIdx: number, pipIdx: number, tipIdx: number) => {
-    const mcp: Pt = { x: maybeMirrorX(lm[mcpIdx].x, mirrored), y: lm[mcpIdx].y }
-    const pip: Pt = { x: maybeMirrorX(lm[pipIdx].x, mirrored), y: lm[pipIdx].y }
-    const tip: Pt = { x: maybeMirrorX(lm[tipIdx].x, mirrored), y: lm[tipIdx].y }
-    const dTip = dist(tip, mcp)
-    const dPip = dist(pip, mcp)
-    return dTip > dPip + 0.12 * palmSize
-  }
-
-  const thumbExtended = (() => {
-    const mcp: Pt = { x: maybeMirrorX(lm[2].x, mirrored), y: lm[2].y }
-    const ip: Pt = { x: maybeMirrorX(lm[3].x, mirrored), y: lm[3].y }
-    const tip: Pt = { x: maybeMirrorX(lm[4].x, mirrored), y: lm[4].y }
-    const dTip = dist(tip, mcp)
-    const dIp = dist(ip, mcp)
-    return dTip > dIp + 0.1 * palmSize
-  })()
-
-  const indexExt = fingerExtended(5, 6, 8)
-  const middleExt = fingerExtended(9, 10, 12)
-  const ringExt = fingerExtended(13, 14, 16)
-  const pinkyExt = fingerExtended(17, 18, 20)
-
-  const extCount =
-    (thumbExtended ? 1 : 0) +
-    (indexExt ? 1 : 0) +
-    (middleExt ? 1 : 0) +
-    (ringExt ? 1 : 0) +
-    (pinkyExt ? 1 : 0)
-
-  // FIST detection
-  const palmCenter: Pt = {
-    x:
-      (wrist2.x + indexMcp2.x + middleMcp2.x + ringMcp2.x + pinkyMcp2.x) / 5,
-    y:
-      (wrist2.y + indexMcp2.y + middleMcp2.y + ringMcp2.y + pinkyMcp2.y) / 5,
-  }
-  const tips: Pt[] = [
-    { x: maybeMirrorX(lm[4].x, mirrored), y: lm[4].y },
-    { x: maybeMirrorX(lm[8].x, mirrored), y: lm[8].y },
-    { x: maybeMirrorX(lm[12].x, mirrored), y: lm[12].y },
-    { x: maybeMirrorX(lm[16].x, mirrored), y: lm[16].y },
-    { x: maybeMirrorX(lm[20].x, mirrored), y: lm[20].y },
-  ]
-  const meanTipToCenter = mean(tips.map((t) => dist(t, palmCenter))) / palmSize
-  if (extCount <= 1 && meanTipToCenter < 0.85) return "FIST"
-
-  // Need open-ish hand for EDGE / PALM DOWN
-  if (extCount < 3) return "UNKNOWN"
-
-  const ratios = palmNormalRatios(lm, mirrored)
-  if (ratios) {
-    const { nxRatio, nyRatio, nzRatio } = ratios
-
-    const edge =
-      nxRatio >= EDGE_NX_MIN &&
-      nxRatio > nyRatio + DOMINANCE_MARGIN &&
-      nxRatio > nzRatio + DOMINANCE_MARGIN
-
-    const palmDown =
-      nyRatio >= PALM_NY_MIN &&
-      nyRatio > nxRatio + DOMINANCE_MARGIN &&
-      nyRatio > nzRatio + DOMINANCE_MARGIN &&
-      extCount >= 4
-
-    if (edge) return "EDGE"
-    if (palmDown) return "PALM"
-
-    // ambiguous fallback
-    return palmWidth2D >= 0.72 && extCount >= 4 ? "PALM" : "EDGE"
-  }
-
-  // 2D fallback (weaker)
-  if (palmWidth2D >= 0.75 && extCount >= 4) return "PALM"
-  if (palmWidth2D <= 0.7) return "EDGE"
-  return "UNKNOWN"
-}
-
-function speedScoreFromTransitionTimes(timesMs: number[]) {
-  if (timesMs.length < 2) return 50
-  const t = median(timesMs)
-
-  if (t >= IDEAL_STEP_TIME_MS_MIN && t <= IDEAL_STEP_TIME_MS_MAX) return 100
-
-  if (t < IDEAL_STEP_TIME_MS_MIN) {
-    const ratio = t / IDEAL_STEP_TIME_MS_MIN
-    return clamp(40 + 60 * ratio, 0, 100)
-  }
-
-  const over = t - IDEAL_STEP_TIME_MS_MAX
-  const span = 1800
-  const drop = (over / span) * 70
-  return clamp(100 - drop, 0, 100)
-}
-
-function perseverationPenalty(stuckEvents: number) {
-  return clamp(stuckEvents * 8, 0, 30)
+  onSkip?: () => void
 }
 
 export function HandTracking({
   videoRef,
   cameraOn,
   onComplete,
-  mirrored = true,
-  overlayCanvasRef,
+  onSkip,
 }: HandTrackingProps) {
   const [status, setStatus] = useState<
     "loading" | "ready" | "countdown" | "tracking" | "done"
   >("loading")
-  const [timeLeft, setTimeLeft] = useState(TASK_DURATION)
-  const [sequenceScore, setSequenceScore] = useState<number | null>(null)
-  const [trackingHint, setTrackingHint] = useState<string | null>(null)
 
+  const [timeLeft, setTimeLeft] = useState(TASK_DURATION)
+  const [stability, setStability] = useState<number | null>(null)
   const [countdownValue, setCountdownValue] = useState(3)
   const [restartCount, setRestartCount] = useState(0)
-
-  const [livePose, setLivePose] = useState<Pose>("UNKNOWN")
-  const [expectedPose, setExpectedPose] =
-    useState<Exclude<Pose, "UNKNOWN">>("FIST")
-  const [cyclesDone, setCyclesDone] = useState<number>(0)
-
-  // ✅ RAF loop reads this ref (avoid stale React state)
-  const expectedPoseRef = useRef<Exclude<Pose, "UNKNOWN">>("FIST")
 
   const handLandmarkerRef = useRef<any>(null)
   const rafRef = useRef<number | null>(null)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const startedRef = useRef<boolean>(false)
+  const positionsRef = useRef<Array<{ x: number; y: number }>>([])
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const doneRef = useRef(false)
+  const storedResultRef = useRef<HandData | null>(null)
 
-  const wristPositionsRef = useRef<Pt[]>([])
-  const totalFramesRef = useRef<number>(0)
-  const detectedFramesRef = useRef<number>(0)
-
-  const acceptedPoseRef = useRef<Pose>("UNKNOWN")
-  const stablePoseRef = useRef<Pose>("UNKNOWN")
-  const stableCountRef = useRef<number>(0)
-  const lastAcceptTsRef = useRef<number>(0)
-
-  const correctStepsRef = useRef<number>(0)
-  const incorrectStepsRef = useRef<number>(0)
-  const cyclesRef = useRef<number>(0)
-
-  const correctTransitionTimesRef = useRef<number[]>([])
-  const lastCorrectAcceptTsRef = useRef<number | null>(null)
-
-  const lastAcceptedPoseStartTsRef = useRef<number | null>(null)
-  const stuckEventsRef = useRef<number>(0)
-
-  const clearOverlay = useCallback(() => {
-    const canvas = overlayCanvasRef?.current
-    if (!canvas) return
-    const ctx = canvas.getContext("2d")
-    if (!ctx) return
-    ctx.clearRect(0, 0, canvas.width, canvas.height)
-  }, [overlayCanvasRef])
-
-  const stopLoops = useCallback(() => {
-    startedRef.current = false
-    if (rafRef.current) cancelAnimationFrame(rafRef.current)
-    rafRef.current = null
-    if (intervalRef.current) clearInterval(intervalRef.current)
-    intervalRef.current = null
-    clearOverlay()
-  }, [clearOverlay])
-
-  const setExpected = useCallback((p: Exclude<Pose, "UNKNOWN">) => {
-    expectedPoseRef.current = p
-    setExpectedPose(p)
-  }, [])
-
+  // -------------------------------
+  // Load MediaPipe model
+  // -------------------------------
   useEffect(() => {
     let cancelled = false
 
@@ -460,105 +83,94 @@ export function HandTracking({
 
     return () => {
       cancelled = true
-      startedRef.current = false
       if (rafRef.current) cancelAnimationFrame(rafRef.current)
       if (intervalRef.current) clearInterval(intervalRef.current)
-      clearOverlay()
-      handLandmarkerRef.current?.close?.()
+      handLandmarkerRef.current?.close()
     }
-  }, [clearOverlay])
-
-  const computeLiveCompositeScore = useCallback(() => {
-    const c = correctStepsRef.current
-    const w = incorrectStepsRef.current
-    const total = c + w
-
-    const accuracy = total > 0 ? c / total : 0.5
-    const completion = clamp(cyclesRef.current / TARGET_CYCLES, 0, 1)
-    const speedScore = speedScoreFromTransitionTimes(
-      correctTransitionTimesRef.current
-    )
-    const penalty = perseverationPenalty(stuckEventsRef.current)
-
-    const composite =
-      100 *
-      (0.55 * accuracy + 0.3 * completion + 0.15 * (speedScore / 100)) -
-      penalty
-
-    return clamp(composite, 0, 100)
   }, [])
 
-  const finishTask = useCallback(() => {
-    stopLoops()
+  // -------------------------------
+  // Draw landmarks
+  // -------------------------------
+  const drawLandmarks = useCallback((landmarks: any) => {
+    const canvas = canvasRef.current
+    const video = videoRef.current
+    if (!canvas || !video) return
 
-    const pts = wristPositionsRef.current
-    const xs = pts.map((p) => p.x)
-    const ys = pts.map((p) => p.y)
-    const varianceX = variance(xs)
-    const varianceY = variance(ys)
+    const ctx = canvas.getContext("2d")
+    if (!ctx) return
 
-    const coverage =
-      detectedFramesRef.current / Math.max(1, totalFramesRef.current)
-    const covFactor = clamp((coverage - 0.5) / 0.5, 0, 1)
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
 
-    const base = computeLiveCompositeScore()
-    const final = clamp(base * (0.75 + 0.25 * covFactor), 0, 100)
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-    setStatus("done")
+    ctx.fillStyle = "#00FFAA"
+    ctx.strokeStyle = "#00FFAA"
+    ctx.lineWidth = 2
 
-    // NOTE: assessment-flow typically advances immediately after onComplete
-    setTimeout(() => {
-      onComplete({
-        stability: Math.round(final * 10) / 10,
-        samples: pts.length,
-        positions: pts.slice(-300),
-        varianceX,
-        varianceY,
-      })
-    }, 0)
-  }, [computeLiveCompositeScore, onComplete, stopLoops])
+    landmarks.forEach((lm: any) => {
+      const x = lm.x * canvas.width
+      const y = lm.y * canvas.height
 
+      ctx.beginPath()
+      ctx.arc(x, y, 4, 0, 2 * Math.PI)
+      ctx.fill()
+    })
+  }, [videoRef])
+
+  // -------------------------------
+  // RMS Stability (sigmoid)
+  // -------------------------------
+  const computeStability = useCallback(
+    (points: Array<{ x: number; y: number }>) => {
+      if (points.length < 20) return 50
+
+      const skip = Math.floor(points.length * 0.3)
+      const settled = points.slice(skip)
+      if (settled.length < 10) return 50
+
+      const meanX =
+        settled.reduce((s, p) => s + p.x, 0) / settled.length
+      const meanY =
+        settled.reduce((s, p) => s + p.y, 0) / settled.length
+
+      const rms = Math.sqrt(
+        settled.reduce(
+          (s, p) => s + (p.x - meanX) ** 2 + (p.y - meanY) ** 2,
+          0
+        ) / settled.length
+      )
+
+      const k = 150
+      const midpoint = 0.02
+
+      return 100 / (1 + Math.exp(k * (rms - midpoint)))
+    },
+    []
+  )
+
+  // -------------------------------
+  // Begin tracking loop
+  // -------------------------------
   const beginTracking = useCallback(() => {
-    if (!handLandmarkerRef.current || !videoRef.current || !cameraOn) return
-    if (startedRef.current) return
-    startedRef.current = true
+    if (!handLandmarkerRef.current || !videoRef.current) return
 
+    doneRef.current = false
     setStatus("tracking")
-    setTrackingHint(null)
     setTimeLeft(TASK_DURATION)
-
-    setLivePose("UNKNOWN")
-    setExpected("FIST")
-    setCyclesDone(0)
-    setSequenceScore(null)
-
-    wristPositionsRef.current = []
-    totalFramesRef.current = 0
-    detectedFramesRef.current = 0
-
-    acceptedPoseRef.current = "UNKNOWN"
-    stablePoseRef.current = "UNKNOWN"
-    stableCountRef.current = 0
-    lastAcceptTsRef.current = 0
-
-    correctStepsRef.current = 0
-    incorrectStepsRef.current = 0
-    cyclesRef.current = 0
-
-    correctTransitionTimesRef.current = []
-    lastCorrectAcceptTsRef.current = null
-
-    lastAcceptedPoseStartTsRef.current = null
-    stuckEventsRef.current = 0
+    positionsRef.current = []
+    setStability(null)
 
     let lastTime = -1
 
     const processFrame = () => {
-      if (!startedRef.current) return
+      if (doneRef.current) return
 
       const video = videoRef.current
       const landmarker = handLandmarkerRef.current
-      if (!video || !landmarker || video.readyState < 2) {
+
+      if (!video || video.readyState < 2) {
         rafRef.current = requestAnimationFrame(processFrame)
         return
       }
@@ -570,130 +182,16 @@ export function HandTracking({
       }
       lastTime = now
 
-      totalFramesRef.current += 1
+      const results = landmarker.detectForVideo(video, Math.round(now))
 
-      try {
-        const results = suppressMediaPipeInfo(() =>
-          landmarker.detectForVideo(video, now)
-        )
-        const hasHand = results?.landmarks?.length > 0
+      if (results?.landmarks?.length > 0) {
+        const wrist = results.landmarks[0][0]
+        positionsRef.current.push({ x: wrist.x, y: wrist.y })
 
-        if (!hasHand) {
-          if (totalFramesRef.current % 30 === 0) {
-            setTrackingHint(
-              "No hand detected — move your hand closer and center it."
-            )
-          }
-          setLivePose("UNKNOWN")
-          clearOverlay()
-          rafRef.current = requestAnimationFrame(processFrame)
-          return
-        }
+        drawLandmarks(results.landmarks[0])
 
-        detectedFramesRef.current += 1
-        setTrackingHint(null)
-
-        const lm: MPPoint[] = results.landmarks[0]
-
-        // Optional overlay draw (video itself is mirrored via CSS in your camera component;
-        // this overlay assumes the same coordinate space)
-        const canvas = overlayCanvasRef?.current
-        if (canvas) {
-          const ctx = canvas.getContext("2d")
-          if (ctx) {
-            const w = video.videoWidth || 640
-            const h = video.videoHeight || 480
-            drawHandOverlay(
-              ctx,
-              canvas,
-              lm.map((p) => ({ x: p.x, y: p.y })),
-              w,
-              h
-            )
-          }
-        }
-
-        // Wrist trace
-        const wrist = lm[0]
-        wristPositionsRef.current.push({
-          x: maybeMirrorX(wrist.x, mirrored),
-          y: wrist.y,
-        })
-
-        // Dwell / perseveration
-        const lastStart = lastAcceptedPoseStartTsRef.current
-        if (acceptedPoseRef.current !== "UNKNOWN" && lastStart != null) {
-          const dwell = now - lastStart
-          if (dwell > STUCK_THRESHOLD_MS) {
-            stuckEventsRef.current += 1
-            lastAcceptedPoseStartTsRef.current = now
-          }
-        }
-
-        const pose: Pose = classifyPose(lm, mirrored)
-        setLivePose(pose)
-
-        // Debounce
-        if (pose === "UNKNOWN") {
-          stablePoseRef.current = "UNKNOWN"
-          stableCountRef.current = 0
-          rafRef.current = requestAnimationFrame(processFrame)
-          return
-        }
-
-        if (pose === stablePoseRef.current) {
-          stableCountRef.current += 1
-        } else {
-          stablePoseRef.current = pose
-          stableCountRef.current = 1
-        }
-
-        const debounceFrames =
-          pose === "PALM" ? DEBOUNCE_FRAMES_PALM : DEBOUNCE_FRAMES_DEFAULT
-        const canAccept = now - lastAcceptTsRef.current > COOLDOWN_MS
-
-        if (
-          stableCountRef.current >= debounceFrames &&
-          canAccept &&
-          pose !== acceptedPoseRef.current
-        ) {
-          acceptedPoseRef.current = pose
-          lastAcceptTsRef.current = now
-          lastAcceptedPoseStartTsRef.current = now
-
-          const expectedNow = expectedPoseRef.current
-
-          if (pose === expectedNow) {
-            if (lastCorrectAcceptTsRef.current != null) {
-              const dt = now - lastCorrectAcceptTsRef.current
-              correctTransitionTimesRef.current.push(dt)
-              correctTransitionTimesRef.current =
-                correctTransitionTimesRef.current.slice(-30)
-            }
-            lastCorrectAcceptTsRef.current = now
-
-            correctStepsRef.current += 1
-
-            const nxt = nextPose(expectedNow)
-            setExpected(nxt)
-
-            if (expectedNow === "PALM") {
-              cyclesRef.current += 1
-              setCyclesDone(cyclesRef.current)
-
-              if (cyclesRef.current >= TARGET_CYCLES) {
-                finishTask()
-                return
-              }
-            }
-          } else {
-            incorrectStepsRef.current += 1
-          }
-
-          setSequenceScore(computeLiveCompositeScore())
-        }
-      } catch {
-        // ignore frame errors
+        const score = computeStability(positionsRef.current)
+        setStability(score)
       }
 
       rafRef.current = requestAnimationFrame(processFrame)
@@ -708,127 +206,78 @@ export function HandTracking({
       setTimeLeft(remaining)
 
       if (remaining <= 0) {
-        finishTask()
+        finishTest()
       }
     }, 250)
-  }, [
-    cameraOn,
-    videoRef,
-    mirrored,
-    overlayCanvasRef,
-    clearOverlay,
-    setExpected,
-    computeLiveCompositeScore,
-    finishTask,
-  ])
+  }, [videoRef, computeStability, drawLandmarks])
 
+  // -------------------------------
+  // Countdown
+  // -------------------------------
   const startTracking = useCallback(() => {
-    if (!handLandmarkerRef.current || !videoRef.current || !cameraOn) return
+    if (!cameraOn) return
 
-    // Countdown before tracking begins
     setStatus("countdown")
     setCountdownValue(3)
 
     let count = 3
-    const id = window.setInterval(() => {
-      count -= 1
+    const id = setInterval(() => {
+      count--
       setCountdownValue(count)
       if (count <= 0) {
-        window.clearInterval(id)
+        clearInterval(id)
         beginTracking()
       }
     }, 1000)
-  }, [beginTracking, cameraOn, videoRef])
+  }, [cameraOn, beginTracking])
 
-  const handleRestart = useCallback(() => {
-    stopLoops()
-    setRestartCount((c) => c + 1)
+  // -------------------------------
+  // Finish
+  // -------------------------------
+  const finishTest = useCallback(() => {
+    doneRef.current = true
+    if (rafRef.current) cancelAnimationFrame(rafRef.current)
+    if (intervalRef.current) clearInterval(intervalRef.current)
 
-    setStatus("ready")
-    setTimeLeft(TASK_DURATION)
-    setSequenceScore(null)
-    setTrackingHint(null)
-    setCountdownValue(3)
+    const finalScore = computeStability(positionsRef.current)
 
-    setLivePose("UNKNOWN")
-    setExpected("FIST")
-    setCyclesDone(0)
-
-    wristPositionsRef.current = []
-    totalFramesRef.current = 0
-    detectedFramesRef.current = 0
-
-    acceptedPoseRef.current = "UNKNOWN"
-    stablePoseRef.current = "UNKNOWN"
-    stableCountRef.current = 0
-    lastAcceptTsRef.current = 0
-
-    correctStepsRef.current = 0
-    incorrectStepsRef.current = 0
-    cyclesRef.current = 0
-
-    correctTransitionTimesRef.current = []
-    lastCorrectAcceptTsRef.current = null
-
-    lastAcceptedPoseStartTsRef.current = null
-    stuckEventsRef.current = 0
-  }, [setExpected, stopLoops])
-
-  const handleFinishEarly = useCallback(() => {
-    if (status === "tracking" || status === "countdown") {
-      finishTask()
+    const result: HandData = {
+      stability: Math.round(finalScore * 10) / 10,
+      samples: positionsRef.current.length,
+      positions: positionsRef.current.slice(-300),
+      varianceX: 0,
+      varianceY: 0,
     }
-  }, [finishTask, status])
 
-  const elapsed = TASK_DURATION - timeLeft
-  const progress = (elapsed / TASK_DURATION) * 100
+    storedResultRef.current = result
+    setStability(finalScore)
+    setStatus("done")
+  }, [computeStability])
 
-  const correctSteps = correctStepsRef.current
-  const incorrectSteps = incorrectStepsRef.current
-  const totalAccepted = correctSteps + incorrectSteps
-  const accuracy = totalAccepted
-    ? Math.round((correctSteps / totalAccepted) * 100)
-    : 0
+  const handleContinue = () => {
+    if (storedResultRef.current) {
+      onComplete(storedResultRef.current)
+    }
+  }
 
-  const medStepMs = median(correctTransitionTimesRef.current)
-  const medStepLabel =
-    correctTransitionTimesRef.current.length >= 2
-      ? `${Math.round(medStepMs)}ms`
-      : "—"
+  const handleRestart = () => {
+    doneRef.current = true
+    if (rafRef.current) cancelAnimationFrame(rafRef.current)
+    if (intervalRef.current) clearInterval(intervalRef.current)
+    setRestartCount((c) => c + 1)
+    setStatus("ready")
+  }
 
-  const canStart = status === "ready" && cameraOn
+  const progress = ((TASK_DURATION - timeLeft) / TASK_DURATION) * 100
 
   return (
-    <Card className="border-border bg-card p-6">
-      <div className="mb-1 flex items-center justify-between">
-        <h2 className="text-xl font-semibold text-foreground">
-          Motor Sequencing Task
-        </h2>
-        {status === "ready" ? (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="gap-1.5 text-xs text-muted-foreground"
-            onClick={handleFinishEarly}
-            disabled={!cameraOn}
-            title="Finish early (records whatever is captured so far)"
-          >
-            <SkipForward className="h-3.5 w-3.5" />
-            Finish Early
-          </Button>
-        ) : null}
-      </div>
+    <Card className="border-border bg-card p-6 space-y-4">
+      <h2 className="text-xl font-semibold text-foreground">Motor Task</h2>
 
-      <p className="mb-4 text-sm text-muted-foreground leading-relaxed">
-        Perform the Luria sequence with your right hand:
-        <br />
-        <span className="font-medium">Fist → Edge (karate chop) → Palm DOWN</span>
-        <br />
-        <span className="text-xs">
-          Palm step = place your hand flat with fingers extended (palm down on
-          table).
-        </span>
-      </p>
+      <canvas
+        ref={canvasRef}
+        className="absolute pointer-events-none"
+      />
 
       {status === "loading" && (
         <div className="flex flex-col items-center gap-3 py-4">
@@ -840,163 +289,49 @@ export function HandTracking({
       )}
 
       {status === "ready" && (
-        <div className="space-y-3">
-          <Button
-            className="w-full gap-2"
-            onClick={startTracking}
-            disabled={!canStart}
-          >
-            <Hand className="h-4 w-4" />
-            {restartCount > 0 ? "Restart Motor Task" : "Start Motor Task"}
-          </Button>
-
-          {restartCount > 0 && (
-            <p className="text-center text-xs text-muted-foreground">
-              Restarted {restartCount} time{restartCount > 1 ? "s" : ""}
-            </p>
-          )}
-        </div>
+        <Button
+          className="w-full gap-2"
+          onClick={startTracking}
+          disabled={!cameraOn}
+        >
+          <Hand className="h-4 w-4" />
+          Start Motor Task
+        </Button>
       )}
 
       {status === "countdown" && (
-        <div className="flex flex-col items-center gap-4 py-8">
-          <p className="text-sm text-muted-foreground">
-            Position your hand and get ready
-          </p>
-          <div className="flex h-24 w-24 items-center justify-center rounded-full border-4 border-primary bg-secondary">
-            <p className="text-4xl font-bold text-primary">{countdownValue}</p>
-          </div>
-          <p className="text-sm font-medium text-foreground">
-            Tracking starts now…
-          </p>
-
-          <div className="flex w-full gap-2">
-            <Button
-              variant="outline"
-              className="flex-1 gap-2"
-              onClick={handleRestart}
-            >
-              <RotateCcw className="h-4 w-4" />
-              Restart
-            </Button>
-            <Button
-              variant="outline"
-              className="flex-1 gap-2"
-              onClick={handleFinishEarly}
-            >
-              <SkipForward className="h-4 w-4" />
-              Finish Early
-            </Button>
-          </div>
+        <div className="text-center text-4xl font-bold text-primary">
+          {countdownValue}
         </div>
       )}
 
       {status === "tracking" && (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between text-sm">
-            <span className="text-muted-foreground">Time remaining</span>
-            <span className="font-mono font-semibold text-foreground">
-              {timeLeft}s
-            </span>
-          </div>
-
+        <>
           <Progress value={progress} className="h-2" />
-
-          {trackingHint && (
-            <div className="flex items-start gap-2 rounded-lg bg-secondary p-3 text-sm text-muted-foreground">
-              <AlertTriangle className="mt-0.5 h-4 w-4 text-muted-foreground" />
-              <span>{trackingHint}</span>
+          {stability !== null && (
+            <div className="text-center">
+              <p className="text-3xl font-bold">
+                {stability.toFixed(1)}
+              </p>
             </div>
           )}
-
-          <div className="grid grid-cols-2 gap-3">
-            <div className="rounded-lg bg-secondary p-4 text-center">
-              <p className="text-xs text-muted-foreground">Detected pose</p>
-              <p className="text-lg font-bold text-foreground">
-                {poseLabel(livePose)}
-              </p>
-            </div>
-
-            <div className="rounded-lg bg-secondary p-4 text-center">
-              <p className="text-xs text-muted-foreground">Next expected</p>
-              <p className="text-lg font-bold text-foreground">
-                {poseLabel(expectedPose)}
-              </p>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-3 gap-3">
-            <div className="rounded-lg bg-secondary p-3 text-center">
-              <p className="text-[11px] text-muted-foreground">Cycles</p>
-              <p className="text-base font-semibold text-foreground">
-                {cyclesDone}/{TARGET_CYCLES}
-              </p>
-            </div>
-            <div className="rounded-lg bg-secondary p-3 text-center">
-              <p className="text-[11px] text-muted-foreground">Accuracy</p>
-              <p className="text-base font-semibold text-foreground">
-                {accuracy}%
-              </p>
-            </div>
-            <div className="rounded-lg bg-secondary p-3 text-center">
-              <p className="text-[11px] text-muted-foreground">Median step</p>
-              <p className="text-base font-semibold text-foreground">
-                {medStepLabel}
-              </p>
-            </div>
-          </div>
-
-          {sequenceScore !== null && (
-            <div className="rounded-lg bg-secondary p-4 text-center">
-              <p className="text-xs text-muted-foreground">
-                Live Sequencing Score
-              </p>
-              <p className="text-3xl font-bold text-foreground">
-                {sequenceScore.toFixed(1)}
-              </p>
-              <p className="text-xs text-muted-foreground">out of 100</p>
-            </div>
-          )}
-
-          <div className="flex items-center justify-center gap-2">
-            <span className="relative flex h-3 w-3">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-75" />
-              <span className="relative inline-flex h-3 w-3 rounded-full bg-accent" />
-            </span>
-            <span className="text-sm font-medium text-accent">
-              Tracking hand…
-            </span>
-          </div>
-
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              className="flex-1 gap-1.5"
-              onClick={handleRestart}
-            >
-              <RotateCcw className="h-3.5 w-3.5" />
-              Restart
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="flex-1 gap-1.5"
-              onClick={handleFinishEarly}
-            >
-              <SkipForward className="h-3.5 w-3.5" />
-              Finish Early
-            </Button>
-          </div>
-        </div>
+        </>
       )}
 
       {status === "done" && (
-        <div className="flex flex-col items-center gap-4 py-2">
-          <CheckCircle2 className="h-10 w-10 text-accent" />
-          <p className="text-sm font-medium text-foreground">
-            Motor task complete! Moving to next task…
+        <div className="space-y-3 text-center">
+          <CheckCircle2 className="h-8 w-8 mx-auto text-accent" />
+          <p className="text-2xl font-bold">
+            {stability?.toFixed(1)}
           </p>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={handleRestart}>
+              Restart
+            </Button>
+            <Button onClick={handleContinue}>
+              Continue
+            </Button>
+          </div>
         </div>
       )}
     </Card>
