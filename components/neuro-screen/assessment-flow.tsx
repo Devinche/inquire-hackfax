@@ -1,617 +1,1004 @@
 "use client"
 
-import { useState, useRef, useEffect, useCallback } from "react"
-import { SpeechTask } from "./speech-task"
-import { HandTracking } from "./hand-tracking"
-import { EyeTracking } from "./eye-tracking"
-import { ResultsDashboard } from "./results-dashboard"
-import { AssessmentHistory } from "./assessment-history"
+import { useEffect, useRef, useState, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
-import { PostResultsActions } from "./post-results-actions"
-import { SendToDoctor } from "./send-to-doctor"
 import {
-  Camera,
-  CameraOff,
-  Activity,
-  Brain,
-  History,
-  ChevronLeft,
+  Hand,
+  CheckCircle2,
+  Loader2,
+  RotateCcw,
+  SkipForward,
+  AlertTriangle,
 } from "lucide-react"
+import { Progress } from "@/components/ui/progress"
+import type { HandData } from "./assessment-flow"
 
-export interface SpeechData {
-  duration: number
-  words: string[]
-  letter: string
-  repeatWords: Record<string, number> // word -> count of times repeated
-  wasSkipped: boolean
-  restartCount: number
+/**
+ * Luria Fist–Edge–Palm (motor sequencing)
+ *
+ * IMPORTANT: "PALM" step here means PALM DOWN on a surface (fingers extended),
+ * not "palm facing camera".
+ *
+ * Functionality preserved:
+ * - Sequencing + scoring logic (accuracy, completion, speed, perseveration penalty, coverage factor)
+ * - MediaPipe tracking loop
+ * - Optional overlay drawing via overlayCanvasRef
+ *
+ * UI adapted to teammate’s version:
+ * - 3-second countdown
+ * - Restart button
+ * - Finish early button
+ * - Cleaner "done" state UI (note: assessment-flow will typically advance immediately onComplete)
+ */
+
+const TASK_DURATION = 15
+const TARGET_CYCLES = 3
+
+const DEBOUNCE_FRAMES_DEFAULT = 6
+const DEBOUNCE_FRAMES_PALM = 6
+const COOLDOWN_MS = 250
+
+const IDEAL_STEP_TIME_MS_MIN = 450
+const IDEAL_STEP_TIME_MS_MAX = 1600
+const STUCK_THRESHOLD_MS = 2200
+
+// Orientation thresholds (tune if needed)
+const EDGE_NX_MIN = 0.55 // higher => stricter EDGE
+const PALM_NY_MIN = 0.55 // higher => stricter PALM DOWN
+const DOMINANCE_MARGIN = 0.08 // must beat the other axis by this margin
+
+interface HandTrackingProps {
+  videoRef: React.RefObject<HTMLVideoElement | null>
+  cameraOn: boolean
+  onComplete: (data: HandData) => void
+  mirrored?: boolean
+  overlayCanvasRef?: React.RefObject<HTMLCanvasElement | null>
 }
 
-export interface HandData {
-  stability: number
-  samples: number
-  positions: Array<{ x: number; y: number }>
-  varianceX: number
-  varianceY: number
-  wasSkipped: boolean
-  restartCount: number
-}
-
-export interface EyeData {
-  smoothness: number
-  samples: number
-  deltas: number[]
-  meanDelta: number
-  maxDelta: number
-  gazeOnTarget: number // percentage of time gaze was on the dot
-  wasSkipped: boolean
-  restartCount: number
-}
-
-export interface AssessmentResults {
-  speech: SpeechData | null
-  hand: HandData | null
-  eye: EyeData | null
-}
-
-export interface StoredAssessment {
-  id: string
-  timestamp: number
-  results: AssessmentResults
-}
-
-const STEPS = [
-  { label: "Welcome", description: "Camera setup and instructions" },
-  { label: "Speech", description: "Verbal fluency assessment" },
-  { label: "Motor", description: "Hand stability tracking" },
-  { label: "Eyes", description: "Eye movement tracking" },
-  { label: "Results", description: "Assessment summary" },
-]
-
-function loadHistory(): StoredAssessment[] {
+/**
+ * Suppress MediaPipe's WASM INFO log ("Created TensorFlow Lite XNNPACK delegate for CPU")
+ * which is routed through console.error by the WASM stderr handler.
+ */
+function suppressMediaPipeInfo<T>(fn: () => T): T {
+  const origError = console.error
+  console.error = (...args: unknown[]) => {
+    if (
+      typeof args[0] === "string" &&
+      args[0].includes("Created TensorFlow Lite XNNPACK delegate for CPU")
+    ) {
+      return
+    }
+    origError.apply(console, args)
+  }
   try {
-    const stored = localStorage.getItem("inquire-history")
-    return stored ? JSON.parse(stored) : []
-  } catch {
-    return []
+    return fn()
+  } finally {
+    console.error = origError
   }
 }
 
-function saveHistory(history: StoredAssessment[]) {
-  try {
-    localStorage.setItem("inquire-history", JSON.stringify(history))
-  } catch {
-    // storage full or unavailable
+type Pt = { x: number; y: number }
+type MPPoint = { x: number; y: number; z?: number }
+type Pose = "FIST" | "EDGE" | "PALM" | "UNKNOWN"
+
+function clamp(n: number, lo: number, hi: number) {
+  return Math.max(lo, Math.min(hi, n))
+}
+
+function maybeMirrorX(x: number, mirrored: boolean) {
+  return mirrored ? 1 - x : x
+}
+
+function mean(arr: number[]) {
+  if (!arr.length) return 0
+  return arr.reduce((s, v) => s + v, 0) / arr.length
+}
+
+function variance(arr: number[]) {
+  if (arr.length < 2) return 0
+  const m = mean(arr)
+  return arr.reduce((s, v) => s + (v - m) ** 2, 0) / arr.length
+}
+
+function median(arr: number[]) {
+  if (!arr.length) return 0
+  const a = [...arr].sort((x, y) => x - y)
+  const mid = Math.floor(a.length / 2)
+  return a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2
+}
+
+function dist(a: Pt, b: Pt) {
+  return Math.hypot(a.x - b.x, a.y - b.y)
+}
+
+function poseLabel(p: Pose) {
+  switch (p) {
+    case "FIST":
+      return "Fist ✊"
+    case "EDGE":
+      return "Edge ✋ (karate chop)"
+    case "PALM":
+      return "Palm DOWN 🖐️⬇️"
+    default:
+      return "…"
   }
 }
 
-export function AssessmentFlow() {
-  const [step, setStep] = useState(0)
-  const [cameraOn, setCameraOn] = useState(false)
-  const [cameraError, setCameraError] = useState<string | null>(null)
-  const [results, setResults] = useState<AssessmentResults>({
-    speech: null,
-    hand: null,
-    eye: null,
-  })
-  const [view, setView] = useState<"assessment" | "history">("assessment")
-  const [history, setHistory] = useState<StoredAssessment[]>([])
-  const [selectedReport, setSelectedReport] = useState<StoredAssessment | null>(
-    null
-  )
+function nextPose(p: Exclude<Pose, "UNKNOWN">): Exclude<Pose, "UNKNOWN"> {
+  if (p === "FIST") return "EDGE"
+  if (p === "EDGE") return "PALM"
+  return "FIST"
+}
 
-  const videoRef = useRef<HTMLVideoElement>(null)
-  const streamRef = useRef<MediaStream | null>(null)
+function drawHandOverlay(
+  ctx: CanvasRenderingContext2D,
+  canvas: HTMLCanvasElement,
+  landmarks: Array<{ x: number; y: number }>,
+  width: number,
+  height: number
+) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-  // Load history on mount
-  useEffect(() => {
-    setHistory(loadHistory())
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width
+    canvas.height = height
+  }
+
+  const connections: Array<[number, number]> = [
+    [0, 1],
+    [1, 2],
+    [2, 3],
+    [3, 4],
+    [0, 5],
+    [5, 6],
+    [6, 7],
+    [7, 8],
+    [0, 9],
+    [9, 10],
+    [10, 11],
+    [11, 12],
+    [0, 13],
+    [13, 14],
+    [14, 15],
+    [15, 16],
+    [0, 17],
+    [17, 18],
+    [18, 19],
+    [19, 20],
+    [5, 9],
+    [9, 13],
+    [13, 17],
+  ]
+
+  ctx.lineWidth = 2
+  ctx.strokeStyle = "rgba(34, 197, 94, 0.9)"
+  ctx.beginPath()
+  for (const [a, b] of connections) {
+    const pa = landmarks[a]
+    const pb = landmarks[b]
+    if (!pa || !pb) continue
+    ctx.moveTo(pa.x * width, pa.y * height)
+    ctx.lineTo(pb.x * width, pb.y * height)
+  }
+  ctx.stroke()
+
+  for (let i = 0; i < landmarks.length; i++) {
+    const p = landmarks[i]
+    const x = p.x * width
+    const y = p.y * height
+    const isTip = i === 4 || i === 8 || i === 12 || i === 16 || i === 20
+    const r = isTip ? 5 : 3
+    ctx.fillStyle = isTip
+      ? "rgba(59, 130, 246, 0.95)"
+      : "rgba(255, 255, 255, 0.9)"
+    ctx.beginPath()
+    ctx.arc(x, y, r, 0, Math.PI * 2)
+    ctx.fill()
+  }
+}
+
+/**
+ * Compute palm-plane normal component ratios from 3D landmarks.
+ * Returns {nxRatio, nyRatio, nzRatio} or null if z is unavailable.
+ */
+function palmNormalRatios(lm: MPPoint[], mirrored: boolean) {
+  const z0 = lm[0].z
+  const z5 = lm[5].z
+  const z17 = lm[17].z
+  if (
+    typeof z0 !== "number" ||
+    typeof z5 !== "number" ||
+    typeof z17 !== "number"
+  ) {
+    return null
+  }
+
+  const p0 = { x: maybeMirrorX(lm[0].x, mirrored), y: lm[0].y, z: z0 }
+  const p5 = { x: maybeMirrorX(lm[5].x, mirrored), y: lm[5].y, z: z5 }
+  const p17 = { x: maybeMirrorX(lm[17].x, mirrored), y: lm[17].y, z: z17 }
+
+  const v1 = { x: p5.x - p0.x, y: p5.y - p0.y, z: p5.z - p0.z }
+  const v2 = { x: p17.x - p0.x, y: p17.y - p0.y, z: p17.z - p0.z }
+
+  const nx = v1.y * v2.z - v1.z * v2.y
+  const ny = v1.z * v2.x - v1.x * v2.z
+  const nz = v1.x * v2.y - v1.y * v2.x
+
+  const norm = Math.hypot(nx, ny, nz)
+  if (norm < 1e-6) return null
+
+  return {
+    nxRatio: Math.abs(nx) / norm,
+    nyRatio: Math.abs(ny) / norm,
+    nzRatio: Math.abs(nz) / norm,
+  }
+}
+
+/**
+ * Robust pose classifier for the Luria task:
+ * - FIST: low extension + tips close to palm center
+ * - EDGE: open-ish hand where palm normal points mostly +/-X (nxRatio high)
+ * - PALM DOWN: open hand where palm normal points mostly +/-Y (nyRatio high)
+ *
+ * If z missing, falls back to a weaker 2D heuristic.
+ */
+function classifyPose(lm: MPPoint[], mirrored: boolean): Pose {
+  if (!lm || lm.length < 21) return "UNKNOWN"
+
+  const wrist2: Pt = { x: maybeMirrorX(lm[0].x, mirrored), y: lm[0].y }
+  const indexMcp2: Pt = { x: maybeMirrorX(lm[5].x, mirrored), y: lm[5].y }
+  const middleMcp2: Pt = { x: maybeMirrorX(lm[9].x, mirrored), y: lm[9].y }
+  const ringMcp2: Pt = { x: maybeMirrorX(lm[13].x, mirrored), y: lm[13].y }
+  const pinkyMcp2: Pt = { x: maybeMirrorX(lm[17].x, mirrored), y: lm[17].y }
+
+  const palmSize = Math.max(dist(wrist2, middleMcp2), 1e-4)
+  const palmWidth2D = dist(indexMcp2, pinkyMcp2) / palmSize
+
+  const fingerExtended = (mcpIdx: number, pipIdx: number, tipIdx: number) => {
+    const mcp: Pt = { x: maybeMirrorX(lm[mcpIdx].x, mirrored), y: lm[mcpIdx].y }
+    const pip: Pt = { x: maybeMirrorX(lm[pipIdx].x, mirrored), y: lm[pipIdx].y }
+    const tip: Pt = { x: maybeMirrorX(lm[tipIdx].x, mirrored), y: lm[tipIdx].y }
+    const dTip = dist(tip, mcp)
+    const dPip = dist(pip, mcp)
+    return dTip > dPip + 0.12 * palmSize
+  }
+
+  const thumbExtended = (() => {
+    const mcp: Pt = { x: maybeMirrorX(lm[2].x, mirrored), y: lm[2].y }
+    const ip: Pt = { x: maybeMirrorX(lm[3].x, mirrored), y: lm[3].y }
+    const tip: Pt = { x: maybeMirrorX(lm[4].x, mirrored), y: lm[4].y }
+    const dTip = dist(tip, mcp)
+    const dIp = dist(ip, mcp)
+    return dTip > dIp + 0.1 * palmSize
+  })()
+
+  const indexExt = fingerExtended(5, 6, 8)
+  const middleExt = fingerExtended(9, 10, 12)
+  const ringExt = fingerExtended(13, 14, 16)
+  const pinkyExt = fingerExtended(17, 18, 20)
+
+  const extCount =
+    (thumbExtended ? 1 : 0) +
+    (indexExt ? 1 : 0) +
+    (middleExt ? 1 : 0) +
+    (ringExt ? 1 : 0) +
+    (pinkyExt ? 1 : 0)
+
+  // FIST detection
+  const palmCenter: Pt = {
+    x:
+      (wrist2.x + indexMcp2.x + middleMcp2.x + ringMcp2.x + pinkyMcp2.x) / 5,
+    y:
+      (wrist2.y + indexMcp2.y + middleMcp2.y + ringMcp2.y + pinkyMcp2.y) / 5,
+  }
+  const tips: Pt[] = [
+    { x: maybeMirrorX(lm[4].x, mirrored), y: lm[4].y },
+    { x: maybeMirrorX(lm[8].x, mirrored), y: lm[8].y },
+    { x: maybeMirrorX(lm[12].x, mirrored), y: lm[12].y },
+    { x: maybeMirrorX(lm[16].x, mirrored), y: lm[16].y },
+    { x: maybeMirrorX(lm[20].x, mirrored), y: lm[20].y },
+  ]
+  const meanTipToCenter = mean(tips.map((t) => dist(t, palmCenter))) / palmSize
+  if (extCount <= 1 && meanTipToCenter < 0.85) return "FIST"
+
+  // Need open-ish hand for EDGE / PALM DOWN
+  if (extCount < 3) return "UNKNOWN"
+
+  const ratios = palmNormalRatios(lm, mirrored)
+  if (ratios) {
+    const { nxRatio, nyRatio, nzRatio } = ratios
+
+    const edge =
+      nxRatio >= EDGE_NX_MIN &&
+      nxRatio > nyRatio + DOMINANCE_MARGIN &&
+      nxRatio > nzRatio + DOMINANCE_MARGIN
+
+    const palmDown =
+      nyRatio >= PALM_NY_MIN &&
+      nyRatio > nxRatio + DOMINANCE_MARGIN &&
+      nyRatio > nzRatio + DOMINANCE_MARGIN &&
+      extCount >= 4
+
+    if (edge) return "EDGE"
+    if (palmDown) return "PALM"
+
+    // ambiguous fallback
+    return palmWidth2D >= 0.72 && extCount >= 4 ? "PALM" : "EDGE"
+  }
+
+  // 2D fallback (weaker)
+  if (palmWidth2D >= 0.75 && extCount >= 4) return "PALM"
+  if (palmWidth2D <= 0.7) return "EDGE"
+  return "UNKNOWN"
+}
+
+function speedScoreFromTransitionTimes(timesMs: number[]) {
+  if (timesMs.length < 2) return 50
+  const t = median(timesMs)
+
+  if (t >= IDEAL_STEP_TIME_MS_MIN && t <= IDEAL_STEP_TIME_MS_MAX) return 100
+
+  if (t < IDEAL_STEP_TIME_MS_MIN) {
+    const ratio = t / IDEAL_STEP_TIME_MS_MIN
+    return clamp(40 + 60 * ratio, 0, 100)
+  }
+
+  const over = t - IDEAL_STEP_TIME_MS_MAX
+  const span = 1800
+  const drop = (over / span) * 70
+  return clamp(100 - drop, 0, 100)
+}
+
+function perseverationPenalty(stuckEvents: number) {
+  return clamp(stuckEvents * 8, 0, 30)
+}
+
+export function HandTracking({
+  videoRef,
+  cameraOn,
+  onComplete,
+  mirrored = true,
+  overlayCanvasRef,
+}: HandTrackingProps) {
+  const [status, setStatus] = useState<
+    "loading" | "ready" | "countdown" | "tracking" | "done"
+  >("loading")
+  const [timeLeft, setTimeLeft] = useState(TASK_DURATION)
+  const [sequenceScore, setSequenceScore] = useState<number | null>(null)
+  const [trackingHint, setTrackingHint] = useState<string | null>(null)
+
+  const [countdownValue, setCountdownValue] = useState(3)
+  const [restartCount, setRestartCount] = useState(0)
+
+  const [livePose, setLivePose] = useState<Pose>("UNKNOWN")
+  const [expectedPose, setExpectedPose] =
+    useState<Exclude<Pose, "UNKNOWN">>("FIST")
+  const [cyclesDone, setCyclesDone] = useState<number>(0)
+
+  // ✅ RAF loop reads this ref (avoid stale React state)
+  const expectedPoseRef = useRef<Exclude<Pose, "UNKNOWN">>("FIST")
+
+  const handLandmarkerRef = useRef<any>(null)
+  const rafRef = useRef<number | null>(null)
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const startedRef = useRef<boolean>(false)
+
+  const wristPositionsRef = useRef<Pt[]>([])
+  const totalFramesRef = useRef<number>(0)
+  const detectedFramesRef = useRef<number>(0)
+
+  const acceptedPoseRef = useRef<Pose>("UNKNOWN")
+  const stablePoseRef = useRef<Pose>("UNKNOWN")
+  const stableCountRef = useRef<number>(0)
+  const lastAcceptTsRef = useRef<number>(0)
+
+  const correctStepsRef = useRef<number>(0)
+  const incorrectStepsRef = useRef<number>(0)
+  const cyclesRef = useRef<number>(0)
+
+  const correctTransitionTimesRef = useRef<number[]>([])
+  const lastCorrectAcceptTsRef = useRef<number | null>(null)
+
+  const lastAcceptedPoseStartTsRef = useRef<number | null>(null)
+  const stuckEventsRef = useRef<number>(0)
+
+  const clearOverlay = useCallback(() => {
+    const canvas = overlayCanvasRef?.current
+    if (!canvas) return
+    const ctx = canvas.getContext("2d")
+    if (!ctx) return
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+  }, [overlayCanvasRef])
+
+  const stopLoops = useCallback(() => {
+    startedRef.current = false
+    if (rafRef.current) cancelAnimationFrame(rafRef.current)
+    rafRef.current = null
+    if (intervalRef.current) clearInterval(intervalRef.current)
+    intervalRef.current = null
+    clearOverlay()
+  }, [clearOverlay])
+
+  const setExpected = useCallback((p: Exclude<Pose, "UNKNOWN">) => {
+    expectedPoseRef.current = p
+    setExpectedPose(p)
   }, [])
 
-  const startCamera = useCallback(async () => {
-    try {
-      setCameraError(null)
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "user", width: 640, height: 480 },
-        audio: false,
-      })
-      streamRef.current = stream
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream
-        await videoRef.current.play()
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadModel() {
+      try {
+        const { FilesetResolver, HandLandmarker } = await import(
+          "@mediapipe/tasks-vision"
+        )
+
+        const vision = await FilesetResolver.forVisionTasks(
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+        )
+
+        const handLandmarker = await HandLandmarker.createFromOptions(vision, {
+          runningMode: "VIDEO",
+          numHands: 1,
+          baseOptions: {
+            modelAssetPath:
+              "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+          },
+        })
+
+        if (!cancelled) {
+          handLandmarkerRef.current = handLandmarker
+          setStatus("ready")
+        }
+      } catch (err) {
+        console.error("Hand model load error:", err)
       }
-      setCameraOn(true)
-    } catch (err) {
-      console.error("Cannot access camera:", err)
-      setCameraError("Camera access denied. Please allow camera permissions.")
-      setCameraOn(false)
     }
-  }, [])
 
-  const stopCamera = useCallback(() => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop())
-      streamRef.current = null
-    }
-    if (videoRef.current) {
-      videoRef.current.srcObject = null
-    }
-    setCameraOn(false)
-  }, [])
+    loadModel()
 
-  const toggleCamera = useCallback(() => {
-    if (cameraOn) {
-      stopCamera()
-    } else {
-      startCamera()
-    }
-  }, [cameraOn, startCamera, stopCamera])
-
-  useEffect(() => {
-    startCamera()
     return () => {
-      stopCamera()
+      cancelled = true
+      startedRef.current = false
+      if (rafRef.current) cancelAnimationFrame(rafRef.current)
+      if (intervalRef.current) clearInterval(intervalRef.current)
+      clearOverlay()
+      handLandmarkerRef.current?.close?.()
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clearOverlay])
+
+  const computeLiveCompositeScore = useCallback(() => {
+    const c = correctStepsRef.current
+    const w = incorrectStepsRef.current
+    const total = c + w
+
+    const accuracy = total > 0 ? c / total : 0.5
+    const completion = clamp(cyclesRef.current / TARGET_CYCLES, 0, 1)
+    const speedScore = speedScoreFromTransitionTimes(
+      correctTransitionTimesRef.current
+    )
+    const penalty = perseverationPenalty(stuckEventsRef.current)
+
+    const composite =
+      100 *
+      (0.55 * accuracy + 0.3 * completion + 0.15 * (speedScore / 100)) -
+      penalty
+
+    return clamp(composite, 0, 100)
   }, [])
 
-  const handleNext = useCallback(() => {
-    setStep((prev) => {
-      const next = prev + 1
-      if (!cameraOn && next >= 1 && next <= 3) {
-        startCamera()
+  const finishTask = useCallback(() => {
+    stopLoops()
+
+    const pts = wristPositionsRef.current
+    const xs = pts.map((p) => p.x)
+    const ys = pts.map((p) => p.y)
+    const varianceX = variance(xs)
+    const varianceY = variance(ys)
+
+    const coverage =
+      detectedFramesRef.current / Math.max(1, totalFramesRef.current)
+    const covFactor = clamp((coverage - 0.5) / 0.5, 0, 1)
+
+    const base = computeLiveCompositeScore()
+    const final = clamp(base * (0.75 + 0.25 * covFactor), 0, 100)
+
+    setStatus("done")
+
+    // NOTE: assessment-flow typically advances immediately after onComplete
+    setTimeout(() => {
+      onComplete({
+        stability: Math.round(final * 10) / 10,
+        samples: pts.length,
+        positions: pts.slice(-300),
+        varianceX,
+        varianceY,
+      })
+    }, 0)
+  }, [computeLiveCompositeScore, onComplete, stopLoops])
+
+  const beginTracking = useCallback(() => {
+    if (!handLandmarkerRef.current || !videoRef.current || !cameraOn) return
+    if (startedRef.current) return
+    startedRef.current = true
+
+    setStatus("tracking")
+    setTrackingHint(null)
+    setTimeLeft(TASK_DURATION)
+
+    setLivePose("UNKNOWN")
+    setExpected("FIST")
+    setCyclesDone(0)
+    setSequenceScore(null)
+
+    wristPositionsRef.current = []
+    totalFramesRef.current = 0
+    detectedFramesRef.current = 0
+
+    acceptedPoseRef.current = "UNKNOWN"
+    stablePoseRef.current = "UNKNOWN"
+    stableCountRef.current = 0
+    lastAcceptTsRef.current = 0
+
+    correctStepsRef.current = 0
+    incorrectStepsRef.current = 0
+    cyclesRef.current = 0
+
+    correctTransitionTimesRef.current = []
+    lastCorrectAcceptTsRef.current = null
+
+    lastAcceptedPoseStartTsRef.current = null
+    stuckEventsRef.current = 0
+
+    let lastTime = -1
+
+    const processFrame = () => {
+      if (!startedRef.current) return
+
+      const video = videoRef.current
+      const landmarker = handLandmarkerRef.current
+      if (!video || !landmarker || video.readyState < 2) {
+        rafRef.current = requestAnimationFrame(processFrame)
+        return
       }
-      return next
-    })
-  }, [cameraOn, startCamera])
 
-  // Ensure camera is on when advancing to any test step
-  const advanceToStep = useCallback(
-    (nextStep: number) => {
-      setStep(nextStep)
-      if (!cameraOn && nextStep >= 1 && nextStep <= 3) {
-        startCamera()
+      const now = performance.now()
+      if (now <= lastTime) {
+        rafRef.current = requestAnimationFrame(processFrame)
+        return
       }
-    },
-    [cameraOn, startCamera]
-  )
+      lastTime = now
 
-  const handleSpeechComplete = useCallback(
-    (data: SpeechData) => {
-      setResults((prev) => ({ ...prev, speech: data }))
-      advanceToStep(2)
-    },
-    [advanceToStep]
-  )
+      totalFramesRef.current += 1
 
-  const handleHandComplete = useCallback(
-    (data: HandData) => {
-      setResults((prev) => ({ ...prev, hand: data }))
-      advanceToStep(3)
-    },
-    [advanceToStep]
-  )
+      try {
+        const results = suppressMediaPipeInfo(() =>
+          landmarker.detectForVideo(video, now)
+        )
+        const hasHand = results?.landmarks?.length > 0
 
-  const handleEyeComplete = useCallback(
-    (data: EyeData) => {
-      setResults((prev) => ({ ...prev, eye: data }))
-      // Save to history when all tasks done
-      const finalResults = { ...results, eye: data }
-      const assessment: StoredAssessment = {
-        id: crypto.randomUUID(),
-        timestamp: Date.now(),
-        results: finalResults,
+        if (!hasHand) {
+          if (totalFramesRef.current % 30 === 0) {
+            setTrackingHint(
+              "No hand detected — move your hand closer and center it."
+            )
+          }
+          setLivePose("UNKNOWN")
+          clearOverlay()
+          rafRef.current = requestAnimationFrame(processFrame)
+          return
+        }
+
+        detectedFramesRef.current += 1
+        setTrackingHint(null)
+
+        const lm: MPPoint[] = results.landmarks[0]
+
+        // Optional overlay draw (video itself is mirrored via CSS in your camera component;
+        // this overlay assumes the same coordinate space)
+        const canvas = overlayCanvasRef?.current
+        if (canvas) {
+          const ctx = canvas.getContext("2d")
+          if (ctx) {
+            const w = video.videoWidth || 640
+            const h = video.videoHeight || 480
+            drawHandOverlay(
+              ctx,
+              canvas,
+              lm.map((p) => ({ x: p.x, y: p.y })),
+              w,
+              h
+            )
+          }
+        }
+
+        // Wrist trace
+        const wrist = lm[0]
+        wristPositionsRef.current.push({
+          x: maybeMirrorX(wrist.x, mirrored),
+          y: wrist.y,
+        })
+
+        // Dwell / perseveration
+        const lastStart = lastAcceptedPoseStartTsRef.current
+        if (acceptedPoseRef.current !== "UNKNOWN" && lastStart != null) {
+          const dwell = now - lastStart
+          if (dwell > STUCK_THRESHOLD_MS) {
+            stuckEventsRef.current += 1
+            lastAcceptedPoseStartTsRef.current = now
+          }
+        }
+
+        const pose: Pose = classifyPose(lm, mirrored)
+        setLivePose(pose)
+
+        // Debounce
+        if (pose === "UNKNOWN") {
+          stablePoseRef.current = "UNKNOWN"
+          stableCountRef.current = 0
+          rafRef.current = requestAnimationFrame(processFrame)
+          return
+        }
+
+        if (pose === stablePoseRef.current) {
+          stableCountRef.current += 1
+        } else {
+          stablePoseRef.current = pose
+          stableCountRef.current = 1
+        }
+
+        const debounceFrames =
+          pose === "PALM" ? DEBOUNCE_FRAMES_PALM : DEBOUNCE_FRAMES_DEFAULT
+        const canAccept = now - lastAcceptTsRef.current > COOLDOWN_MS
+
+        if (
+          stableCountRef.current >= debounceFrames &&
+          canAccept &&
+          pose !== acceptedPoseRef.current
+        ) {
+          acceptedPoseRef.current = pose
+          lastAcceptTsRef.current = now
+          lastAcceptedPoseStartTsRef.current = now
+
+          const expectedNow = expectedPoseRef.current
+
+          if (pose === expectedNow) {
+            if (lastCorrectAcceptTsRef.current != null) {
+              const dt = now - lastCorrectAcceptTsRef.current
+              correctTransitionTimesRef.current.push(dt)
+              correctTransitionTimesRef.current =
+                correctTransitionTimesRef.current.slice(-30)
+            }
+            lastCorrectAcceptTsRef.current = now
+
+            correctStepsRef.current += 1
+
+            const nxt = nextPose(expectedNow)
+            setExpected(nxt)
+
+            if (expectedNow === "PALM") {
+              cyclesRef.current += 1
+              setCyclesDone(cyclesRef.current)
+
+              if (cyclesRef.current >= TARGET_CYCLES) {
+                finishTask()
+                return
+              }
+            }
+          } else {
+            incorrectStepsRef.current += 1
+          }
+
+          setSequenceScore(computeLiveCompositeScore())
+        }
+      } catch {
+        // ignore frame errors
       }
-      const newHistory = [assessment, ...history]
-      setHistory(newHistory)
-      saveHistory(newHistory)
-      advanceToStep(4)
-    },
-    [advanceToStep, results, history]
-  )
 
-  // Skip handlers: produce data with wasSkipped=true
-  const handleSkipSpeech = useCallback(() => {
-    handleSpeechComplete({
-      duration: 0,
-      words: [],
-      letter: "",
-      repeatWords: {},
-      wasSkipped: true,
-      restartCount: 0,
-    })
-  }, [handleSpeechComplete])
+      rafRef.current = requestAnimationFrame(processFrame)
+    }
 
-  const handleSkipHand = useCallback(() => {
-    handleHandComplete({
-      stability: 0,
-      samples: 0,
-      positions: [],
-      varianceX: 0,
-      varianceY: 0,
-      wasSkipped: true,
-      restartCount: 0,
-    })
-  }, [handleHandComplete])
+    rafRef.current = requestAnimationFrame(processFrame)
 
-  const handleSkipEye = useCallback(() => {
-    handleEyeComplete({
-      smoothness: 0,
-      samples: 0,
-      deltas: [],
-      meanDelta: 0,
-      maxDelta: 0,
-      gazeOnTarget: 0,
-      wasSkipped: true,
-      restartCount: 0,
-    })
-  }, [handleEyeComplete])
+    const startTime = Date.now()
+    intervalRef.current = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000)
+      const remaining = Math.max(0, TASK_DURATION - elapsed)
+      setTimeLeft(remaining)
+
+      if (remaining <= 0) {
+        finishTask()
+      }
+    }, 250)
+  }, [
+    cameraOn,
+    videoRef,
+    mirrored,
+    overlayCanvasRef,
+    clearOverlay,
+    setExpected,
+    computeLiveCompositeScore,
+    finishTask,
+  ])
+
+  const startTracking = useCallback(() => {
+    if (!handLandmarkerRef.current || !videoRef.current || !cameraOn) return
+
+    // Countdown before tracking begins
+    setStatus("countdown")
+    setCountdownValue(3)
+
+    let count = 3
+    const id = window.setInterval(() => {
+      count -= 1
+      setCountdownValue(count)
+      if (count <= 0) {
+        window.clearInterval(id)
+        beginTracking()
+      }
+    }, 1000)
+  }, [beginTracking, cameraOn, videoRef])
 
   const handleRestart = useCallback(() => {
-    setStep(0)
-    setResults({ speech: null, hand: null, eye: null })
-    setView("assessment")
-    setSelectedReport(null)
-    if (!cameraOn) {
-      startCamera()
+    stopLoops()
+    setRestartCount((c) => c + 1)
+
+    setStatus("ready")
+    setTimeLeft(TASK_DURATION)
+    setSequenceScore(null)
+    setTrackingHint(null)
+    setCountdownValue(3)
+
+    setLivePose("UNKNOWN")
+    setExpected("FIST")
+    setCyclesDone(0)
+
+    wristPositionsRef.current = []
+    totalFramesRef.current = 0
+    detectedFramesRef.current = 0
+
+    acceptedPoseRef.current = "UNKNOWN"
+    stablePoseRef.current = "UNKNOWN"
+    stableCountRef.current = 0
+    lastAcceptTsRef.current = 0
+
+    correctStepsRef.current = 0
+    incorrectStepsRef.current = 0
+    cyclesRef.current = 0
+
+    correctTransitionTimesRef.current = []
+    lastCorrectAcceptTsRef.current = null
+
+    lastAcceptedPoseStartTsRef.current = null
+    stuckEventsRef.current = 0
+  }, [setExpected, stopLoops])
+
+  const handleFinishEarly = useCallback(() => {
+    if (status === "tracking" || status === "countdown") {
+      finishTask()
     }
-  }, [cameraOn, startCamera])
+  }, [finishTask, status])
 
-  const handleContinueFromResults = useCallback(() => {
-    setStep(5)
-  }, [])
+  const elapsed = TASK_DURATION - timeLeft
+  const progress = (elapsed / TASK_DURATION) * 100
 
-  const handleBackToResults = useCallback(() => {
-    setStep(4)
-  }, [])
+  const correctSteps = correctStepsRef.current
+  const incorrectSteps = incorrectStepsRef.current
+  const totalAccepted = correctSteps + incorrectSteps
+  const accuracy = totalAccepted
+    ? Math.round((correctSteps / totalAccepted) * 100)
+    : 0
 
-  const handleSendToDoctor = useCallback(() => {
-    // Will be handled in Task 3 - PDF generation
-    // For now go to a send-to-doctor flow
-    setStep(6)
-  }, [])
+  const medStepMs = median(correctTransitionTimesRef.current)
+  const medStepLabel =
+    correctTransitionTimesRef.current.length >= 2
+      ? `${Math.round(medStepMs)}ms`
+      : "—"
 
-  const handleViewReport = useCallback((assessment: StoredAssessment) => {
-    setSelectedReport(assessment)
-    setView("assessment")
-    setStep(4)
-  }, [])
-
-  const handleDeleteAssessment = useCallback(
-    (id: string) => {
-      const newHistory = history.filter((a) => a.id !== id)
-      setHistory(newHistory)
-      saveHistory(newHistory)
-      if (selectedReport?.id === id) {
-        setSelectedReport(null)
-        setView("history")
-      }
-    },
-    [history, selectedReport]
-  )
-
-  // Auto-start camera when entering any test step (1-3)
-  // Also poll cameraOn so if camera drops mid-test it restarts
-  useEffect(() => {
-    if (view === "assessment" && step >= 1 && step <= 3) {
-      if (!cameraOn) {
-        startCamera()
-      }
-    }
-    // Stop camera when reaching results or post-results
-    if (step >= 4 && cameraOn) {
-      stopCamera()
-    }
-  }, [step, view, cameraOn, startCamera, stopCamera])
-
-  // Only show camera panel for active test steps, not results
-  const showCamera = step >= 1 && step <= 3 && view === "assessment"
+  const canStart = status === "ready" && cameraOn
 
   return (
-    <div className="flex min-h-screen flex-col bg-background">
-      {/* Header */}
-      <header className="flex items-center justify-between border-b border-border px-4 py-3 sm:px-6 sm:py-4">
-        <div className="flex items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary">
-            <Brain className="h-5 w-5 text-primary-foreground" />
-          </div>
-          <div>
-            <h1 className="text-lg font-semibold text-foreground">
-              Inquire
-            </h1>
-            <p className="text-xs text-muted-foreground">
-              Cognitive Assessment Tool
-            </p>
-          </div>
-        </div>
-
-        {/* Step indicators -- desktop only */}
-        {view === "assessment" && (
-          <div className="hidden items-center gap-1 lg:flex">
-            {STEPS.map((s, i) => (
-              <div key={s.label} className="flex items-center">
-                <div
-                  className={`flex h-7 items-center rounded-full px-3 text-xs font-medium transition-colors ${
-                    i === step
-                      ? "bg-primary text-primary-foreground"
-                      : i < step
-                        ? "bg-accent text-accent-foreground"
-                        : "bg-secondary text-muted-foreground"
-                  }`}
-                >
-                  {s.label}
-                </div>
-                {i < STEPS.length - 1 && (
-                  <div
-                    className={`mx-1 h-px w-4 ${i < step ? "bg-accent" : "bg-border"}`}
-                  />
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-
-        <div className="flex items-center gap-2">
-          {/* History toggle */}
+    <Card className="border-border bg-card p-6">
+      <div className="mb-1 flex items-center justify-between">
+        <h2 className="text-xl font-semibold text-foreground">
+          Motor Sequencing Task
+        </h2>
+        {status === "ready" ? (
           <Button
-            variant={view === "history" ? "default" : "outline"}
+            variant="ghost"
             size="sm"
-            className="gap-2"
-            onClick={() => {
-              if (view === "history") {
-                setView("assessment")
-                if (step < 4) setSelectedReport(null)
-              } else {
-                setView("history")
-              }
-            }}
+            className="gap-1.5 text-xs text-muted-foreground"
+            onClick={handleFinishEarly}
+            disabled={!cameraOn}
+            title="Finish early (records whatever is captured so far)"
           >
-            <History className="h-4 w-4" />
-            <span className="hidden sm:inline">
-              History ({history.length})
-            </span>
+            <SkipForward className="h-3.5 w-3.5" />
+            Finish Early
+          </Button>
+        ) : null}
+      </div>
+
+      <p className="mb-4 text-sm text-muted-foreground leading-relaxed">
+        Perform the Luria sequence with your right hand:
+        <br />
+        <span className="font-medium">Fist → Edge (karate chop) → Palm DOWN</span>
+        <br />
+        <span className="text-xs">
+          Palm step = place your hand flat with fingers extended (palm down on
+          table).
+        </span>
+      </p>
+
+      {status === "loading" && (
+        <div className="flex flex-col items-center gap-3 py-4">
+          <Loader2 className="h-8 w-8 animate-spin text-primary" />
+          <p className="text-sm text-muted-foreground">
+            Loading hand tracking model...
+          </p>
+        </div>
+      )}
+
+      {status === "ready" && (
+        <div className="space-y-3">
+          <Button
+            className="w-full gap-2"
+            onClick={startTracking}
+            disabled={!canStart}
+          >
+            <Hand className="h-4 w-4" />
+            {restartCount > 0 ? "Restart Motor Task" : "Start Motor Task"}
           </Button>
 
-          {/* Camera toggle */}
-          {view === "assessment" && (
+          {restartCount > 0 && (
+            <p className="text-center text-xs text-muted-foreground">
+              Restarted {restartCount} time{restartCount > 1 ? "s" : ""}
+            </p>
+          )}
+        </div>
+      )}
+
+      {status === "countdown" && (
+        <div className="flex flex-col items-center gap-4 py-8">
+          <p className="text-sm text-muted-foreground">
+            Position your hand and get ready
+          </p>
+          <div className="flex h-24 w-24 items-center justify-center rounded-full border-4 border-primary bg-secondary">
+            <p className="text-4xl font-bold text-primary">{countdownValue}</p>
+          </div>
+          <p className="text-sm font-medium text-foreground">
+            Tracking starts now…
+          </p>
+
+          <div className="flex w-full gap-2">
+            <Button
+              variant="outline"
+              className="flex-1 gap-2"
+              onClick={handleRestart}
+            >
+              <RotateCcw className="h-4 w-4" />
+              Restart
+            </Button>
+            <Button
+              variant="outline"
+              className="flex-1 gap-2"
+              onClick={handleFinishEarly}
+            >
+              <SkipForward className="h-4 w-4" />
+              Finish Early
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {status === "tracking" && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-muted-foreground">Time remaining</span>
+            <span className="font-mono font-semibold text-foreground">
+              {timeLeft}s
+            </span>
+          </div>
+
+          <Progress value={progress} className="h-2" />
+
+          {trackingHint && (
+            <div className="flex items-start gap-2 rounded-lg bg-secondary p-3 text-sm text-muted-foreground">
+              <AlertTriangle className="mt-0.5 h-4 w-4 text-muted-foreground" />
+              <span>{trackingHint}</span>
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="rounded-lg bg-secondary p-4 text-center">
+              <p className="text-xs text-muted-foreground">Detected pose</p>
+              <p className="text-lg font-bold text-foreground">
+                {poseLabel(livePose)}
+              </p>
+            </div>
+
+            <div className="rounded-lg bg-secondary p-4 text-center">
+              <p className="text-xs text-muted-foreground">Next expected</p>
+              <p className="text-lg font-bold text-foreground">
+                {poseLabel(expectedPose)}
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-3">
+            <div className="rounded-lg bg-secondary p-3 text-center">
+              <p className="text-[11px] text-muted-foreground">Cycles</p>
+              <p className="text-base font-semibold text-foreground">
+                {cyclesDone}/{TARGET_CYCLES}
+              </p>
+            </div>
+            <div className="rounded-lg bg-secondary p-3 text-center">
+              <p className="text-[11px] text-muted-foreground">Accuracy</p>
+              <p className="text-base font-semibold text-foreground">
+                {accuracy}%
+              </p>
+            </div>
+            <div className="rounded-lg bg-secondary p-3 text-center">
+              <p className="text-[11px] text-muted-foreground">Median step</p>
+              <p className="text-base font-semibold text-foreground">
+                {medStepLabel}
+              </p>
+            </div>
+          </div>
+
+          {sequenceScore !== null && (
+            <div className="rounded-lg bg-secondary p-4 text-center">
+              <p className="text-xs text-muted-foreground">
+                Live Sequencing Score
+              </p>
+              <p className="text-3xl font-bold text-foreground">
+                {sequenceScore.toFixed(1)}
+              </p>
+              <p className="text-xs text-muted-foreground">out of 100</p>
+            </div>
+          )}
+
+          <div className="flex items-center justify-center gap-2">
+            <span className="relative flex h-3 w-3">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-75" />
+              <span className="relative inline-flex h-3 w-3 rounded-full bg-accent" />
+            </span>
+            <span className="text-sm font-medium text-accent">
+              Tracking hand…
+            </span>
+          </div>
+
+          <div className="flex gap-2">
             <Button
               variant="outline"
               size="sm"
-              onClick={toggleCamera}
-              className="gap-2"
+              className="flex-1 gap-1.5"
+              onClick={handleRestart}
             >
-              {cameraOn ? (
-                <>
-                  <Camera className="h-4 w-4" />
-                  <span className="hidden sm:inline">Camera On</span>
-                </>
-              ) : (
-                <>
-                  <CameraOff className="h-4 w-4" />
-                  <span className="hidden sm:inline">Camera Off</span>
-                </>
-              )}
+              <RotateCcw className="h-3.5 w-3.5" />
+              Restart
             </Button>
-          )}
-        </div>
-      </header>
-
-      {/* History view */}
-      {view === "history" && (
-        <main className="flex flex-1 flex-col items-center p-4 sm:p-6">
-          <div className="w-full max-w-4xl">
-            <AssessmentHistory
-              history={history}
-              onViewReport={handleViewReport}
-              onDelete={handleDeleteAssessment}
-              onNewAssessment={handleRestart}
-            />
+            <Button
+              variant="outline"
+              size="sm"
+              className="flex-1 gap-1.5"
+              onClick={handleFinishEarly}
+            >
+              <SkipForward className="h-3.5 w-3.5" />
+              Finish Early
+            </Button>
           </div>
-        </main>
+        </div>
       )}
 
-      {/* Assessment view */}
-      {view === "assessment" && (
-        <main className="flex flex-1 flex-col items-center p-4 sm:p-6">
-          {/* Side-by-side layout: camera + task on larger screens */}
-          {showCamera ? (
-            <div className="flex w-full max-w-5xl flex-col gap-4 lg:flex-row">
-              {/* Camera */}
-              <div className="w-full shrink-0 lg:w-[360px]">
-                <Card className="sticky top-4 overflow-hidden border-border bg-card">
-                  <div className="relative aspect-[4/3] w-full bg-secondary">
-                    <video
-                      ref={videoRef}
-                      autoPlay
-                      playsInline
-                      muted
-                      className="h-full w-full object-cover"
-                      style={{ transform: "scaleX(-1)" }}
-                    />
-                    {!cameraOn && (
-                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-secondary">
-                        <CameraOff className="h-10 w-10 text-muted-foreground" />
-                        <p className="text-sm text-muted-foreground">
-                          Camera is off
-                        </p>
-                        <Button size="sm" onClick={startCamera}>
-                          Turn On Camera
-                        </Button>
-                      </div>
-                    )}
-                    {cameraError && (
-                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-secondary">
-                        <CameraOff className="h-10 w-10 text-destructive" />
-                        <p className="max-w-xs text-center text-sm text-destructive">
-                          {cameraError}
-                        </p>
-                      </div>
-                    )}
-                    {cameraOn && (
-                      <div className="absolute left-2 top-2 flex items-center gap-2 rounded-full bg-background/80 px-3 py-1 backdrop-blur-sm">
-                        <Activity className="h-3 w-3 text-accent" />
-                        <span className="text-xs font-medium text-foreground">
-                          {STEPS[step].label}
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                </Card>
-              </div>
-
-              {/* Task content */}
-              <div className="flex-1">
-                {step === 1 && (
-                  <SpeechTask
-                    onComplete={handleSpeechComplete}
-                    onSkip={handleSkipSpeech}
-                  />
-                )}
-                {step === 2 && (
-                  <HandTracking
-                    videoRef={videoRef}
-                    cameraOn={cameraOn}
-                    onComplete={handleHandComplete}
-                    onSkip={handleSkipHand}
-                  />
-                )}
-                {step === 3 && (
-                  <EyeTracking
-                    videoRef={videoRef}
-                    cameraOn={cameraOn}
-                    onComplete={handleEyeComplete}
-                    onSkip={handleSkipEye}
-                  />
-                )}
-              </div>
-            </div>
-          ) : (
-            <div className="w-full max-w-4xl">
-              {/* Hidden video element for initial setup */}
-              <video
-                ref={videoRef}
-                autoPlay
-                playsInline
-                muted
-                className="hidden"
-              />
-
-              {step === 0 && (
-                <div className="flex flex-col items-center gap-6">
-                  {/* Camera preview for welcome */}
-                  <Card className="w-full max-w-[480px] overflow-hidden border-border bg-card">
-                    <div className="relative aspect-[4/3] w-full bg-secondary">
-                      <video
-                        autoPlay
-                        playsInline
-                        muted
-                        className="h-full w-full object-cover"
-                        style={{ transform: "scaleX(-1)" }}
-                        ref={(el) => {
-                          if (el && streamRef.current) {
-                            el.srcObject = streamRef.current
-                          }
-                        }}
-                      />
-                      {!cameraOn && (
-                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-secondary">
-                          <CameraOff className="h-12 w-12 text-muted-foreground" />
-                          <p className="text-sm text-muted-foreground">
-                            Camera is off
-                          </p>
-                          <Button size="sm" onClick={startCamera}>
-                            Turn On Camera
-                          </Button>
-                        </div>
-                      )}
-                    </div>
-                  </Card>
-
-                  <Card className="w-full max-w-[480px] border-border bg-card p-6">
-                    <h2 className="mb-2 text-xl font-semibold text-foreground text-balance">
-                      Welcome to Inquire
-                    </h2>
-                    <p className="mb-4 text-sm text-muted-foreground leading-relaxed">
-                      This tool performs a quick cognitive screening through
-                      three short tasks. Make sure your camera is on and you are
-                      in a well-lit environment.
-                    </p>
-                    <div className="flex flex-col gap-2 text-sm text-muted-foreground">
-                      <div className="flex items-center gap-2">
-                        <div className="h-1.5 w-1.5 rounded-full bg-primary" />
-                        Speech: Say words starting with a letter (60s)
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <div className="h-1.5 w-1.5 rounded-full bg-primary" />
-                        Motor: Hold your hand steady (15s)
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <div className="h-1.5 w-1.5 rounded-full bg-primary" />
-                        Eyes: Follow a moving dot (15s)
-                      </div>
-                    </div>
-                    <Button
-                      className="mt-6 w-full"
-                      onClick={handleNext}
-                      disabled={!cameraOn}
-                    >
-                      Begin Assessment
-                    </Button>
-                  </Card>
-                </div>
-              )}
-
-              {step === 4 && (
-                <div>
-                  {selectedReport ? (
-                    <div className="mb-4">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="gap-1 text-muted-foreground"
-                        onClick={() => {
-                          setSelectedReport(null)
-                          setView("history")
-                        }}
-                      >
-                        <ChevronLeft className="h-4 w-4" />
-                        Back to History
-                      </Button>
-                    </div>
-                  ) : null}
-                  <ResultsDashboard
-                    results={selectedReport?.results ?? results}
-                    onRestart={handleRestart}
-                    onContinue={handleContinueFromResults}
-                    onViewHistory={() => setView("history")}
-                    allHistory={history}
-                  />
-                </div>
-              )}
-
-              {step === 5 && (
-                <PostResultsActions
-                  results={selectedReport?.results ?? results}
-                  allHistory={history}
-                  onRestart={handleRestart}
-                  onViewHistory={() => setView("history")}
-                  onSendToDoctor={handleSendToDoctor}
-                  onBack={handleBackToResults}
-                />
-              )}
-
-              {step === 6 && (
-                <SendToDoctor
-                  results={selectedReport?.results ?? results}
-                  allHistory={history}
-                  onBack={() => setStep(5)}
-                />
-              )}
-            </div>
-          )}
-        </main>
+      {status === "done" && (
+        <div className="flex flex-col items-center gap-4 py-2">
+          <CheckCircle2 className="h-10 w-10 text-accent" />
+          <p className="text-sm font-medium text-foreground">
+            Motor task complete! Moving to next task…
+          </p>
+        </div>
       )}
-    </div>
+    </Card>
   )
 }
