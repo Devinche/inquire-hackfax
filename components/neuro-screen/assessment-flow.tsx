@@ -104,6 +104,9 @@ export function AssessmentFlow() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
 
+  // ✅ ADD THIS: overlay canvas for MediaPipe landmarks
+  const overlayCanvasRef = useRef<HTMLCanvasElement>(null)
+
   // Load history on mount
   useEffect(() => {
     setHistory(loadHistory())
@@ -137,6 +140,14 @@ export function AssessmentFlow() {
     if (videoRef.current) {
       videoRef.current.srcObject = null
     }
+
+    // ✅ clear overlay when camera stops
+    const canvas = overlayCanvasRef.current
+    if (canvas) {
+      const ctx = canvas.getContext("2d")
+      if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height)
+    }
+
     setCameraOn(false)
   }, [])
 
@@ -267,8 +278,6 @@ export function AssessmentFlow() {
   }, [])
 
   const handleSendToDoctor = useCallback(() => {
-    // Will be handled in Task 3 - PDF generation
-    // For now go to a send-to-doctor flow
     setStep(6)
   }, [])
 
@@ -317,9 +326,7 @@ export function AssessmentFlow() {
             <Brain className="h-5 w-5 text-primary-foreground" />
           </div>
           <div>
-            <h1 className="text-lg font-semibold text-foreground">
-              Inquire
-            </h1>
+            <h1 className="text-lg font-semibold text-foreground">Inquire</h1>
             <p className="text-xs text-muted-foreground">
               Cognitive Assessment Tool
             </p>
@@ -332,13 +339,12 @@ export function AssessmentFlow() {
             {STEPS.map((s, i) => (
               <div key={s.label} className="flex items-center">
                 <div
-                  className={`flex h-7 items-center rounded-full px-3 text-xs font-medium transition-colors ${
-                    i === step
+                  className={`flex h-7 items-center rounded-full px-3 text-xs font-medium transition-colors ${i === step
                       ? "bg-primary text-primary-foreground"
                       : i < step
                         ? "bg-accent text-accent-foreground"
                         : "bg-secondary text-muted-foreground"
-                  }`}
+                    }`}
                 >
                   {s.label}
                 </div>
@@ -368,9 +374,7 @@ export function AssessmentFlow() {
             }}
           >
             <History className="h-4 w-4" />
-            <span className="hidden sm:inline">
-              History ({history.length})
-            </span>
+            <span className="hidden sm:inline">History ({history.length})</span>
           </Button>
 
           {/* Camera toggle */}
@@ -429,6 +433,14 @@ export function AssessmentFlow() {
                       className="h-full w-full object-cover"
                       style={{ transform: "scaleX(-1)" }}
                     />
+
+                    {/* ✅ ADD THIS CANVAS OVERLAY (landmarkers) */}
+                    <canvas
+                      ref={overlayCanvasRef}
+                      className="absolute inset-0 h-full w-full pointer-events-none"
+                      style={{ transform: "scaleX(-1)" }}
+                    />
+
                     {!cameraOn && (
                       <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-secondary">
                         <CameraOff className="h-10 w-10 text-muted-foreground" />
@@ -474,6 +486,8 @@ export function AssessmentFlow() {
                     cameraOn={cameraOn}
                     onComplete={handleHandComplete}
                     onSkip={handleSkipHand}
+                    overlayCanvasRef={overlayCanvasRef} // ✅ PASS IT IN
+                    mirrored={true}
                   />
                 )}
                 {step === 3 && (
