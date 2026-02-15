@@ -44,78 +44,90 @@ function suppressMediaPipeInfo<T>(fn: () => T): T {
 }
 
 /**
- * Compute normalized gaze direction from iris landmarks.
- * Works with glasses by using multiple eye landmarks for robustness:
- * - Iris center (landmarks 468/473) for precise gaze when visible
- * - Eye corner midpoints (33/133 left, 263/362 right) as fallback
- * - Averages both eyes to reduce per-eye noise from glasses frames/reflections
+ * Compute RELATIVE gaze direction from iris landmarks.
  *
- * Glasses considerations (from MediaPipe face mesh documentation):
- * - Iris landmarks (468-477) may be less accurate through lenses
- * - Eye corner landmarks (33, 133, 263, 362) are more reliable with glasses
- * - We use a weighted blend: iris when detected, corners as fallback
- * - Averaging both eyes cancels out asymmetric lens distortion
+ * KEY INSIGHT: We compute where the iris sits WITHIN the eye socket (relative to
+ * the eye corners), NOT the absolute position of the iris in the camera frame.
+ * This means head movement does NOT affect the gaze reading -- only actual eye
+ * movement (looking left/right/up/down) changes the output.
+ *
+ * For each eye:
+ *   gazeX = (iris.x - outerCorner.x) / (innerCorner.x - outerCorner.x)
+ *     => 0.0 = looking fully outer, 0.5 = center, 1.0 = looking fully inner
+ *   gazeY = (iris.y - topLid.y) / (bottomLid.y - topLid.y)
+ *     => 0.0 = looking up, 0.5 = center, 1.0 = looking down
+ *
+ * We average both eyes and map the result to 0-1 screen space.
+ *
+ * Works with glasses because lens refraction shifts iris AND eye corners
+ * roughly equally, so the relative position is preserved.
  */
 function getGazePosition(
   landmarks: Array<{ x: number; y: number; z: number }>
 ): { x: number; y: number; confidence: "high" | "medium" | "low" } {
-  // Try iris landmarks first (most precise without glasses)
-  const leftIris = landmarks[468] // left eye iris center
-  const rightIris = landmarks[473] // right eye iris center
+  // Iris center landmarks
+  const leftIris = landmarks[468]
+  const rightIris = landmarks[473]
 
-  // Eye corner landmarks (more reliable with glasses)
+  // Left eye corners and lids
   const leftOuter = landmarks[33]
   const leftInner = landmarks[133]
+  const leftTop = landmarks[159]    // upper eyelid center
+  const leftBottom = landmarks[145] // lower eyelid center
+
+  // Right eye corners and lids
   const rightInner = landmarks[362]
   const rightOuter = landmarks[263]
+  const rightTop = landmarks[386]    // upper eyelid center
+  const rightBottom = landmarks[374] // lower eyelid center
 
-  // Use iris if available and within expected eye bounds
-  if (leftIris && rightIris && leftOuter && leftInner && rightOuter && rightInner) {
-    // Check if iris positions are within eye corners (validation for glasses)
+  if (
+    leftIris && rightIris &&
+    leftOuter && leftInner && leftTop && leftBottom &&
+    rightOuter && rightInner && rightTop && rightBottom
+  ) {
     const leftEyeWidth = Math.abs(leftInner.x - leftOuter.x)
     const rightEyeWidth = Math.abs(rightOuter.x - rightInner.x)
+    const leftEyeHeight = Math.abs(leftBottom.y - leftTop.y)
+    const rightEyeHeight = Math.abs(rightBottom.y - rightTop.y)
 
-    const leftIrisRelative =
-      leftEyeWidth > 0.001
-        ? (leftIris.x - leftOuter.x) / leftEyeWidth
-        : 0.5
-    const rightIrisRelative =
-      rightEyeWidth > 0.001
-        ? (rightIris.x - rightInner.x) / rightEyeWidth
-        : 0.5
+    if (leftEyeWidth > 0.001 && rightEyeWidth > 0.001 &&
+        leftEyeHeight > 0.001 && rightEyeHeight > 0.001) {
+      // Iris position relative to eye socket (0 = outer/top, 1 = inner/bottom)
+      const leftRelX = (leftIris.x - leftOuter.x) / leftEyeWidth
+      const leftRelY = (leftIris.y - leftTop.y) / leftEyeHeight
+      const rightRelX = (rightIris.x - rightInner.x) / rightEyeWidth
+      const rightRelY = (rightIris.y - rightTop.y) / rightEyeHeight
 
-    // If iris positions seem valid (within 0-1 relative to eye width)
-    if (
-      leftIrisRelative >= -0.2 &&
-      leftIrisRelative <= 1.2 &&
-      rightIrisRelative >= -0.2 &&
-      rightIrisRelative <= 1.2
-    ) {
+      // Average both eyes for stability (cancels asymmetric noise/glasses distortion)
+      const gazeRelX = (leftRelX + rightRelX) / 2
+      const gazeRelY = (leftRelY + rightRelY) / 2
+
+      // Map to 0-1 screen space: center of eye (0.5 relative) -> 0.5 screen
+      // Amplify to make gaze direction actually map across screen area
+      // Eyes typically move iris 0.3-0.7 relative within the socket
+      const screenX = 0.5 + (gazeRelX - 0.5) * 2.5
+      const screenY = 0.5 + (gazeRelY - 0.5) * 2.0
+
       return {
-        x: (leftIris.x + rightIris.x) / 2,
-        y: (leftIris.y + rightIris.y) / 2,
+        x: Math.max(0, Math.min(1, screenX)),
+        y: Math.max(0, Math.min(1, screenY)),
         confidence: "high",
       }
     }
   }
 
-  // Fallback to eye center midpoints (works better with thick glasses)
-  if (leftOuter && leftInner && rightOuter && rightInner) {
-    const leftCenterX = (leftOuter.x + leftInner.x) / 2
-    const leftCenterY = (leftOuter.y + leftInner.y) / 2
-    const rightCenterX = (rightInner.x + rightOuter.x) / 2
-    const rightCenterY = (rightInner.y + rightOuter.y) / 2
+  // Fallback: try just eye corners (works with thick glasses that occlude iris)
+  if (leftOuter && leftInner && rightOuter && rightInner && leftTop && rightTop && leftBottom && rightBottom) {
+    // Use eye openness ratio as a proxy for vertical gaze
+    const leftOpenness = Math.abs(leftBottom.y - leftTop.y) / (Math.abs(leftInner.x - leftOuter.x) || 0.001)
+    const rightOpenness = Math.abs(rightBottom.y - rightTop.y) / (Math.abs(rightOuter.x - rightInner.x) || 0.001)
+    const avgOpenness = (leftOpenness + rightOpenness) / 2
     return {
-      x: (leftCenterX + rightCenterX) / 2,
-      y: (leftCenterY + rightCenterY) / 2,
+      x: 0.5, // can't determine horizontal gaze without iris
+      y: Math.max(0, Math.min(1, 0.5 + (avgOpenness - 0.3) * 2)),
       confidence: "medium",
     }
-  }
-
-  // Last resort: use face center approximation
-  const noseTip = landmarks[1]
-  if (noseTip) {
-    return { x: noseTip.x, y: noseTip.y - 0.05, confidence: "low" }
   }
 
   return { x: 0.5, y: 0.5, confidence: "low" }
@@ -223,12 +235,14 @@ export function EyeTracking({
     if (dotIntervalRef.current) clearInterval(dotIntervalRef.current)
   }, [])
 
+  const storedResultRef = useRef<EyeData | null>(null)
+
   const finishTest = useCallback(
     (skipped: boolean) => {
       stopTracking()
 
       const allDeltas = deltasRef.current
-      const finalSmoothness = skipped ? 0 : computeFinalSmoothness(allDeltas)
+      const rawSmoothness = skipped ? 0 : computeFinalSmoothness(allDeltas)
       const meanDelta =
         allDeltas.length > 0
           ? allDeltas.reduce((s, d) => s + d, 0) / allDeltas.length
@@ -241,22 +255,42 @@ export function EyeTracking({
             )
           : 0
 
+      // Factor gazeOnTarget into score: if gaze was on target less than 40% of
+      // the time, apply a proportional penalty
+      let finalSmoothness = rawSmoothness
+      if (!skipped && gazeOnTarget < 40) {
+        const gazePenalty = 0.5 + (gazeOnTarget / 40) * 0.5
+        finalSmoothness = rawSmoothness * gazePenalty
+      }
+
+      const result: EyeData = {
+        smoothness: Math.round(finalSmoothness * 10) / 10,
+        samples: allDeltas.length,
+        deltas: allDeltas.slice(-300),
+        meanDelta,
+        maxDelta,
+        gazeOnTarget,
+        wasSkipped: skipped,
+        restartCount,
+      }
+
+      storedResultRef.current = result
+      setSmoothness(finalSmoothness)
       setStatus("done")
-      setTimeout(() => {
-        onComplete({
-          smoothness: Math.round(finalSmoothness * 10) / 10,
-          samples: allDeltas.length,
-          deltas: allDeltas.slice(-300),
-          meanDelta,
-          maxDelta,
-          gazeOnTarget,
-          wasSkipped: skipped,
-          restartCount,
-        })
-      }, 0)
     },
-    [stopTracking, onComplete, restartCount]
+    [stopTracking, restartCount]
   )
+
+  const handleContinue = useCallback(() => {
+    if (storedResultRef.current) {
+      onComplete(storedResultRef.current)
+    }
+  }, [onComplete])
+
+  const handleRestartFromDone = useCallback(() => {
+    storedResultRef.current = null
+    handleRestart()
+  }, [handleRestart])
 
   const startTracking = useCallback(() => {
     if (!faceLandmarkerRef.current || !videoRef.current || !cameraOn) return
@@ -324,17 +358,21 @@ export function EyeTracking({
           prevX = gaze.x
           prevY = gaze.y
 
-          // Check if gaze is roughly toward the dot
+          // Check if gaze direction is roughly toward the dot
           // The dot is in percentage coordinates (0-100), gaze is normalized (0-1)
-          // Use a generous threshold since webcam gaze estimation is approximate
+          // With iris-relative gaze, we need a generous threshold because:
+          // - Webcam iris tracking has inherent noise (~3-5% of eye width)
+          // - Glasses add ~2-3% additional jitter from lens refraction
+          // - The amplification from relative->screen coords adds variance
           totalFrameCountRef.current++
           const dotX = currentDotRef.current.x / 100
           const dotY = currentDotRef.current.y / 100
           const gazeDist = Math.sqrt(
             (gaze.x - dotX) ** 2 + (gaze.y - dotY) ** 2
           )
-          // Threshold: ~15% of screen - generous because webcam gaze is imprecise
-          const isOnTarget = gazeDist < 0.15
+          // Very generous threshold (30% of screen) because iris-relative
+          // gaze is directional, not pixel-precise
+          const isOnTarget = gazeDist < 0.30
           if (isOnTarget) gazeOnTargetCountRef.current++
           setGazeOnDot(isOnTarget)
 
@@ -562,11 +600,39 @@ export function EyeTracking({
       )}
 
       {status === "done" && (
-        <div className="flex flex-col items-center gap-3">
+        <div className="flex flex-col items-center gap-4 py-2">
           <CheckCircle2 className="h-10 w-10 text-accent" />
           <p className="text-sm font-medium text-foreground">
-            Eye tracking complete! Preparing results...
+            Eye tracking complete!
           </p>
+          {smoothness !== null && (
+            <div className="rounded-lg bg-secondary p-4 text-center w-full">
+              <p className="text-xs text-muted-foreground">Final Score</p>
+              <p className="text-3xl font-bold text-foreground">
+                {smoothness.toFixed(1)}
+              </p>
+              <p className="text-xs text-muted-foreground">out of 100</p>
+              {storedResultRef.current && (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Gaze on target: {storedResultRef.current.gazeOnTarget}%
+                </p>
+              )}
+            </div>
+          )}
+          <div className="flex gap-3 w-full">
+            <Button
+              variant="outline"
+              className="flex-1 gap-2"
+              onClick={handleRestartFromDone}
+            >
+              <RotateCcw className="h-4 w-4" />
+              Restart Test
+            </Button>
+            <Button className="flex-1 gap-2" onClick={handleContinue}>
+              <SkipForward className="h-4 w-4" />
+              Continue
+            </Button>
+          </div>
         </div>
       )}
     </Card>

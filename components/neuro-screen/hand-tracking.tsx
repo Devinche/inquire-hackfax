@@ -3,7 +3,13 @@
 import { useEffect, useRef, useState, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
-import { Hand, CheckCircle2, Loader2, SkipForward, RotateCcw } from "lucide-react"
+import {
+  Hand,
+  CheckCircle2,
+  Loader2,
+  SkipForward,
+  RotateCcw,
+} from "lucide-react"
 import { Progress } from "@/components/ui/progress"
 import type { HandData } from "./assessment-flow"
 
@@ -45,11 +51,12 @@ export function HandTracking({
   onSkip,
 }: HandTrackingProps) {
   const [status, setStatus] = useState<
-    "loading" | "ready" | "tracking" | "done"
+    "loading" | "ready" | "countdown" | "tracking" | "done"
   >("loading")
   const [timeLeft, setTimeLeft] = useState(TASK_DURATION)
   const [stability, setStability] = useState<number | null>(null)
   const [restartCount, setRestartCount] = useState(0)
+  const [countdownValue, setCountdownValue] = useState(3)
 
   const handLandmarkerRef = useRef<any>(null)
   const rafRef = useRef<number | null>(null)
@@ -118,8 +125,8 @@ export function HandTracking({
     (points: Array<{ x: number; y: number }>) => {
       if (points.length < 15) return 50
 
-      // Skip first 20% as settling period
-      const skipCount = Math.max(10, Math.floor(points.length * 0.2))
+      // Skip first 30% as settling period
+      const skipCount = Math.max(15, Math.floor(points.length * 0.3))
       const settled = points.slice(skipCount)
       if (settled.length < 10) return 50
 
@@ -157,6 +164,8 @@ export function HandTracking({
     if (intervalRef.current) clearInterval(intervalRef.current)
   }, [])
 
+  const storedResultRef = useRef<HandData | null>(null)
+
   const finishTest = useCallback(
     (skipped: boolean) => {
       stopTracking()
@@ -175,24 +184,53 @@ export function HandTracking({
           pts.reduce((s, p) => s + (p.y - meanY) ** 2, 0) / pts.length
       }
 
+      const result: HandData = {
+        stability: Math.round(finalStability * 10) / 10,
+        samples: pts.length,
+        positions: pts.slice(-300),
+        varianceX,
+        varianceY,
+        wasSkipped: skipped,
+        restartCount,
+      }
+
+      storedResultRef.current = result
+      setStability(finalStability)
       setStatus("done")
-      setTimeout(() => {
-        onComplete({
-          stability: Math.round(finalStability * 10) / 10,
-          samples: pts.length,
-          positions: pts.slice(-300),
-          varianceX,
-          varianceY,
-          wasSkipped: skipped,
-          restartCount,
-        })
-      }, 0)
     },
-    [stopTracking, onComplete, restartCount]
+    [stopTracking, restartCount]
   )
+
+  const handleContinue = useCallback(() => {
+    if (storedResultRef.current) {
+      onComplete(storedResultRef.current)
+    }
+  }, [onComplete])
+
+  const handleRestartFromDone = useCallback(() => {
+    storedResultRef.current = null
+    handleRestart()
+  }, [handleRestart])
 
   const startTracking = useCallback(() => {
     if (!handLandmarkerRef.current || !videoRef.current || !cameraOn) return
+
+    // 3-second countdown before tracking starts
+    setStatus("countdown")
+    setCountdownValue(3)
+    let count = 3
+    const countdownInterval = setInterval(() => {
+      count--
+      setCountdownValue(count)
+      if (count <= 0) {
+        clearInterval(countdownInterval)
+        beginTracking()
+      }
+    }, 1000)
+  }, [videoRef, cameraOn]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const beginTracking = useCallback(() => {
+    if (!handLandmarkerRef.current || !videoRef.current) return
 
     doneRef.current = false
     setStatus("tracking")
@@ -247,7 +285,7 @@ export function HandTracking({
         finishTest(false)
       }
     }, 250)
-  }, [videoRef, cameraOn, computeStability, finishTest])
+  }, [videoRef, computeStability, finishTest])
 
   const handleRestart = useCallback(() => {
     stopTracking()
@@ -255,6 +293,7 @@ export function HandTracking({
     setStatus("ready")
     setTimeLeft(TASK_DURATION)
     setStability(null)
+    setCountdownValue(3)
     positionsRef.current = []
   }, [stopTracking])
 
@@ -315,6 +354,20 @@ export function HandTracking({
         </div>
       )}
 
+      {status === "countdown" && (
+        <div className="flex flex-col items-center gap-4 py-8">
+          <p className="text-sm text-muted-foreground">
+            Position your hand in front of the camera
+          </p>
+          <div className="flex h-24 w-24 items-center justify-center rounded-full border-4 border-primary bg-secondary">
+            <p className="text-4xl font-bold text-primary">{countdownValue}</p>
+          </div>
+          <p className="text-sm font-medium text-foreground">
+            Hold steady -- tracking starts soon
+          </p>
+        </div>
+      )}
+
       {status === "tracking" && (
         <div className="space-y-4">
           <div className="flex items-center justify-between text-sm">
@@ -371,11 +424,34 @@ export function HandTracking({
       )}
 
       {status === "done" && (
-        <div className="flex flex-col items-center gap-3">
+        <div className="flex flex-col items-center gap-4 py-2">
           <CheckCircle2 className="h-10 w-10 text-accent" />
           <p className="text-sm font-medium text-foreground">
-            Motor task complete! Moving to next task...
+            Motor task complete!
           </p>
+          {stability !== null && (
+            <div className="rounded-lg bg-secondary p-4 text-center w-full">
+              <p className="text-xs text-muted-foreground">Final Stability Score</p>
+              <p className="text-3xl font-bold text-foreground">
+                {stability.toFixed(1)}
+              </p>
+              <p className="text-xs text-muted-foreground">out of 100</p>
+            </div>
+          )}
+          <div className="flex gap-3 w-full">
+            <Button
+              variant="outline"
+              className="flex-1 gap-2"
+              onClick={handleRestartFromDone}
+            >
+              <RotateCcw className="h-4 w-4" />
+              Restart Test
+            </Button>
+            <Button className="flex-1 gap-2" onClick={handleContinue}>
+              <SkipForward className="h-4 w-4" />
+              Continue
+            </Button>
+          </div>
         </div>
       )}
     </Card>
@@ -395,8 +471,9 @@ export function HandTracking({
 function computeFinalStability(points: Array<{ x: number; y: number }>) {
   if (points.length < 15) return 50
 
-  // Skip first 20% as settling period
-  const skipCount = Math.max(10, Math.floor(points.length * 0.2))
+  // Skip first 30% as settling period -- gives the user time to stabilize
+  // after clicking start, even beyond the countdown
+  const skipCount = Math.max(15, Math.floor(points.length * 0.3))
   const settled = points.slice(skipCount)
   if (settled.length < 10) return 50
 

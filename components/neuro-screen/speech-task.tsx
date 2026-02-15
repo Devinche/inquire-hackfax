@@ -52,13 +52,14 @@ export function SpeechTask({ onComplete, onSkip }: SpeechTaskProps) {
     return cleanup
   }, [cleanup])
 
+  const storedResultRef = useRef<SpeechData | null>(null)
+
   const finishRecording = useCallback(() => {
     if (stoppedRef.current) return
     stoppedRef.current = true
 
     cleanup()
     const duration = Math.round((Date.now() - startTimeRef.current) / 1000)
-    setStatus("done")
 
     // Deduplicate words for the final list
     const uniqueWords = [...new Set(allWordsRef.current)]
@@ -71,17 +72,27 @@ export function SpeechTask({ onComplete, onSkip }: SpeechTaskProps) {
       }
     }
 
-    setTimeout(() => {
-      onComplete({
-        duration,
-        words: uniqueWords,
-        letter,
-        repeatWords,
-        wasSkipped: false,
-        restartCount,
-      })
-    }, 0)
-  }, [cleanup, letter, onComplete, restartCount])
+    storedResultRef.current = {
+      duration,
+      words: uniqueWords,
+      letter,
+      repeatWords,
+      wasSkipped: false,
+      restartCount,
+    }
+    setStatus("done")
+  }, [cleanup, letter, restartCount])
+
+  const handleContinue = useCallback(() => {
+    if (storedResultRef.current) {
+      onComplete(storedResultRef.current)
+    }
+  }, [onComplete])
+
+  const handleRestartFromDone = useCallback(() => {
+    storedResultRef.current = null
+    handleRestart()
+  }, [handleRestart])
 
   const startRecording = useCallback(async () => {
     stoppedRef.current = false
@@ -342,11 +353,36 @@ export function SpeechTask({ onComplete, onSkip }: SpeechTaskProps) {
       )}
 
       {status === "done" && (
-        <div className="flex flex-col items-center gap-3">
+        <div className="flex flex-col items-center gap-4 py-2">
           <CheckCircle2 className="h-10 w-10 text-accent" />
           <p className="text-sm font-medium text-foreground">
-            Recording complete! Moving to next task...
+            Recording complete!
           </p>
+          {storedResultRef.current && (
+            <div className="rounded-lg bg-secondary p-4 text-center w-full">
+              <p className="text-xs text-muted-foreground">Words Captured</p>
+              <p className="text-3xl font-bold text-foreground">
+                {storedResultRef.current.words.length}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                in {storedResultRef.current.duration}s
+              </p>
+            </div>
+          )}
+          <div className="flex gap-3 w-full">
+            <Button
+              variant="outline"
+              className="flex-1 gap-2"
+              onClick={handleRestartFromDone}
+            >
+              <RotateCcw className="h-4 w-4" />
+              Restart Test
+            </Button>
+            <Button className="flex-1 gap-2" onClick={handleContinue}>
+              <SkipForward className="h-4 w-4" />
+              Continue
+            </Button>
+          </div>
         </div>
       )}
     </Card>

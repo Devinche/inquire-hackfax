@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo } from "react"
+import { useMemo, useState } from "react"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import {
@@ -39,12 +39,17 @@ import {
   HeartPulse,
   SkipForward,
   Repeat,
+  ArrowRight,
+  History,
+  Send,
+  ClipboardCopy,
 } from "lucide-react"
 import type { AssessmentResults, StoredAssessment } from "./assessment-flow"
 
 interface ResultsDashboardProps {
   results: AssessmentResults
   onRestart: () => void
+  onViewHistory?: () => void
   allHistory: StoredAssessment[]
 }
 
@@ -321,8 +326,11 @@ function getRecommendations(
 export function ResultsDashboard({
   results,
   onRestart,
+  onViewHistory,
   allHistory,
 }: ResultsDashboardProps) {
+  const [showPostResults, setShowPostResults] = useState(false)
+  const [copiedToClipboard, setCopiedToClipboard] = useState(false)
   const speechWordCount = results.speech?.words?.length ?? 0
   const matchingWordCount = results.speech
     ? results.speech.words.filter((w) =>
@@ -1058,12 +1066,13 @@ export function ResultsDashboard({
           <p className="mb-2 text-sm font-medium text-foreground">
             Performance Radar
           </p>
-          <ResponsiveContainer width="100%" height={220}>
-            <RadarChart data={radarData}>
+          <ResponsiveContainer width="100%" height={280}>
+            <RadarChart data={radarData} cx="50%" cy="55%" outerRadius="60%">
               <PolarGrid stroke="hsl(var(--border))" />
               <PolarAngleAxis
                 dataKey="task"
-                tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
+                tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11 }}
+                tickLine={false}
               />
               <PolarRadiusAxis
                 angle={90}
@@ -1281,11 +1290,102 @@ export function ResultsDashboard({
         </div>
       </Card>
 
-      {/* Restart */}
-      <Button variant="outline" className="w-full gap-2" onClick={onRestart}>
-        <RotateCcw className="h-4 w-4" />
-        Run New Assessment
-      </Button>
+      {/* Continue / Post-Results Actions */}
+      {!showPostResults ? (
+        <Button
+          className="w-full gap-2"
+          onClick={() => setShowPostResults(true)}
+        >
+          Continue
+          <ArrowRight className="h-4 w-4" />
+        </Button>
+      ) : (
+        <Card className="border-border bg-card p-6">
+          <h3 className="mb-2 text-lg font-semibold text-foreground text-balance">
+            What would you like to do next?
+          </h3>
+          <p className="mb-6 text-sm text-muted-foreground">
+            Choose an action below to continue.
+          </p>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <button
+              onClick={onRestart}
+              className="flex flex-col items-center gap-3 rounded-xl border border-border bg-secondary p-5 text-center transition-colors hover:border-primary hover:bg-primary/5"
+            >
+              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/10">
+                <RotateCcw className="h-5 w-5 text-primary" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-foreground">
+                  Run New Assessment
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Start a fresh set of tests
+                </p>
+              </div>
+            </button>
+
+            {onViewHistory && (
+              <button
+                onClick={onViewHistory}
+                className="flex flex-col items-center gap-3 rounded-xl border border-border bg-secondary p-5 text-center transition-colors hover:border-accent hover:bg-accent/5"
+              >
+                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-accent/10">
+                  <History className="h-5 w-5 text-accent" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-foreground">
+                    View History
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    See all past assessments
+                  </p>
+                </div>
+              </button>
+            )}
+
+            <button
+              onClick={() => {
+                const lines = [
+                  "Neuro Screen Assessment Results",
+                  `Date: ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`,
+                  "",
+                  `Overall Score: ${overallScore}/100 -- ${overall.text}`,
+                  "",
+                  `Speech (Verbal Fluency): ${speechSkipped ? "Skipped" : `${speechScore}/100 -- ${matchingWordCount} matching words in ${results.speech?.duration ?? 0}s`}`,
+                  `Motor (Hand Stability): ${handSkipped ? "Skipped" : `${handScore.toFixed(1)}/100 -- ${results.hand?.samples ?? 0} samples`}`,
+                  `Eyes (Smooth Pursuit): ${eyeSkipped ? "Skipped" : `${eyeScore.toFixed(1)}/100 -- Gaze on target ${results.eye?.gazeOnTarget ?? 0}%`}`,
+                  "",
+                  "Disclaimer: This is a screening tool only, not a medical diagnosis.",
+                ]
+                navigator.clipboard.writeText(lines.join("\n")).then(() => {
+                  setCopiedToClipboard(true)
+                  setTimeout(() => setCopiedToClipboard(false), 3000)
+                })
+              }}
+              className="flex flex-col items-center gap-3 rounded-xl border border-border bg-secondary p-5 text-center transition-colors hover:border-primary hover:bg-primary/5"
+            >
+              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/10">
+                {copiedToClipboard ? (
+                  <CheckCircle2 className="h-5 w-5 text-accent" />
+                ) : (
+                  <Send className="h-5 w-5 text-primary" />
+                )}
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-foreground">
+                  {copiedToClipboard ? "Copied!" : "Send to Doctor"}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {copiedToClipboard
+                    ? "Results copied to clipboard"
+                    : "Copy results summary to share"}
+                </p>
+              </div>
+            </button>
+          </div>
+        </Card>
+      )}
     </div>
   )
 }

@@ -275,7 +275,19 @@ export function AssessmentFlow() {
     [history, selectedReport]
   )
 
-  const showCamera = step > 0 && view === "assessment"
+  // Auto-start camera when entering any test step (1-3)
+  useEffect(() => {
+    if (view === "assessment" && step >= 1 && step <= 3 && !cameraOn) {
+      startCamera()
+    }
+    // Stop camera when reaching results
+    if (step === 4 && cameraOn) {
+      stopCamera()
+    }
+  }, [step, view]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Only show camera panel for active test steps, not results
+  const showCamera = step >= 1 && step <= 3 && view === "assessment"
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
@@ -453,31 +465,6 @@ export function AssessmentFlow() {
                     onSkip={handleSkipEye}
                   />
                 )}
-                {step === 4 && (
-                  <div>
-                    {selectedReport ? (
-                      <div className="mb-4">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="gap-1 text-muted-foreground"
-                          onClick={() => {
-                            setSelectedReport(null)
-                            setView("history")
-                          }}
-                        >
-                          <ChevronLeft className="h-4 w-4" />
-                          Back to History
-                        </Button>
-                      </div>
-                    ) : null}
-                    <ResultsDashboard
-                      results={selectedReport?.results ?? results}
-                      onRestart={handleRestart}
-                      allHistory={history}
-                    />
-                  </div>
-                )}
               </div>
             </div>
           ) : (
@@ -556,6 +543,32 @@ export function AssessmentFlow() {
                 </div>
               )}
 
+              {step === 4 && (
+                <div>
+                  {selectedReport ? (
+                    <div className="mb-4">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="gap-1 text-muted-foreground"
+                        onClick={() => {
+                          setSelectedReport(null)
+                          setView("history")
+                        }}
+                      >
+                        <ChevronLeft className="h-4 w-4" />
+                        Back to History
+                      </Button>
+                    </div>
+                  ) : null}
+                  <ResultsDashboard
+                    results={selectedReport?.results ?? results}
+                    onRestart={handleRestart}
+                    onViewHistory={() => setView("history")}
+                    allHistory={history}
+                  />
+                </div>
+              )}
             </div>
           )}
         </main>
