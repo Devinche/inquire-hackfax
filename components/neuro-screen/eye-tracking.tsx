@@ -48,9 +48,12 @@ export function EyeTracking({
         const faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
           runningMode: "VIDEO",
           numFaces: 1,
+          outputFaceBlendshapes: false,
+          outputFacialTransformationMatrixes: false,
           baseOptions: {
             modelAssetPath:
               "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+            delegate: "GPU",
           },
         })
         if (!cancelled) {
@@ -97,8 +100,10 @@ export function EyeTracking({
     let prevX: number | null = null
     let prevY: number | null = null
     let lastTime = -1
+    const doneRef = { current: false }
 
     const processFrame = () => {
+      if (doneRef.current) return
       const video = videoRef.current
       const landmarker = faceLandmarkerRef.current
       if (!video || !landmarker || video.readyState < 2) {
@@ -107,31 +112,39 @@ export function EyeTracking({
       }
 
       const now = performance.now()
-      if (now === lastTime) {
+      // MediaPipe requires strictly increasing timestamps
+      if (now <= lastTime) {
         rafRef.current = requestAnimationFrame(processFrame)
         return
       }
       lastTime = now
 
       try {
-        const results = landmarker.detectForVideo(video, now)
+        const results = landmarker.detectForVideo(video, Math.round(now))
         if (results?.faceLandmarks?.length > 0) {
-          // Landmark 468 is left iris center, 473 is right iris center
-          const leftIris = results.faceLandmarks[0][468] || results.faceLandmarks[0][33]
-          const rightIris = results.faceLandmarks[0][473] || results.faceLandmarks[0][263]
-          const avgX = (leftIris.x + rightIris.x) / 2
-          const avgY = (leftIris.y + rightIris.y) / 2
+          const landmarks = results.faceLandmarks[0]
+          // Use reliable eye corner landmarks:
+          // Left eye inner corner: 133, outer corner: 33
+          // Right eye inner corner: 362, outer corner: 263
+          // These are always available in the face mesh
+          const leftEye = landmarks[133] ?? landmarks[33]
+          const rightEye = landmarks[362] ?? landmarks[263]
 
-          if (prevX !== null && prevY !== null) {
-            const delta = Math.sqrt(
-              (avgX - prevX) ** 2 + (avgY - prevY) ** 2
-            )
-            deltasRef.current.push(delta)
-            const currentSmoothness = computeSmoothness(deltasRef.current)
-            setSmoothness(currentSmoothness)
+          if (leftEye && rightEye) {
+            const avgX = (leftEye.x + rightEye.x) / 2
+            const avgY = (leftEye.y + rightEye.y) / 2
+
+            if (prevX !== null && prevY !== null) {
+              const delta = Math.sqrt(
+                (avgX - prevX) ** 2 + (avgY - prevY) ** 2
+              )
+              deltasRef.current.push(delta)
+              const currentSmoothness = computeSmoothness(deltasRef.current)
+              setSmoothness(currentSmoothness)
+            }
+            prevX = avgX
+            prevY = avgY
           }
-          prevX = avgX
-          prevY = avgY
 
           // Draw landmarks on canvas
           if (canvasRef.current) {
@@ -141,13 +154,11 @@ export function EyeTracking({
               const h = canvasRef.current.height
               ctx.clearRect(0, 0, w, h)
               ctx.fillStyle = "#0ea5e9"
-              results.faceLandmarks[0].forEach(
-                (lm: { x: number; y: number }) => {
-                  ctx.beginPath()
-                  ctx.arc(lm.x * w, lm.y * h, 1, 0, 2 * Math.PI)
-                  ctx.fill()
-                }
-              )
+              landmarks.forEach((lm: { x: number; y: number }) => {
+                ctx.beginPath()
+                ctx.arc(lm.x * w, lm.y * h, 1, 0, 2 * Math.PI)
+                ctx.fill()
+              })
             }
           }
         }
@@ -160,23 +171,28 @@ export function EyeTracking({
 
     rafRef.current = requestAnimationFrame(processFrame)
 
+    const startTime = Date.now()
     intervalRef.current = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 1) {
-          if (rafRef.current) cancelAnimationFrame(rafRef.current)
-          if (intervalRef.current) clearInterval(intervalRef.current)
-          if (dotIntervalRef.current) clearInterval(dotIntervalRef.current)
-          const finalSmoothness = computeSmoothness(deltasRef.current)
-          setStatus("done")
+      const elapsed = Math.floor((Date.now() - startTime) / 1000)
+      const remaining = Math.max(0, TASK_DURATION - elapsed)
+      setTimeLeft(remaining)
+
+      if (remaining <= 0) {
+        doneRef.current = true
+        if (rafRef.current) cancelAnimationFrame(rafRef.current)
+        if (intervalRef.current) clearInterval(intervalRef.current)
+        if (dotIntervalRef.current) clearInterval(dotIntervalRef.current)
+        const finalSmoothness = computeSmoothness(deltasRef.current)
+        setStatus("done")
+        // Defer the parent state update to avoid setState-during-render
+        setTimeout(() => {
           onComplete({
             smoothness: Math.round(finalSmoothness * 10) / 10,
             samples: deltasRef.current.length,
           })
-          return 0
-        }
-        return prev - 1
-      })
-    }, 1000)
+        }, 0)
+      }
+    }, 250)
   }, [videoRef, cameraOn, computeSmoothness, onComplete])
 
   const elapsed = TASK_DURATION - timeLeft

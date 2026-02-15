@@ -48,6 +48,7 @@ export function HandTracking({
           baseOptions: {
             modelAssetPath:
               "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+            delegate: "GPU",
           },
         })
         if (!cancelled) {
@@ -92,8 +93,10 @@ export function HandTracking({
     setTimeLeft(TASK_DURATION)
 
     let lastTime = -1
+    const doneRef = { current: false }
 
     const processFrame = () => {
+      if (doneRef.current) return
       const video = videoRef.current
       const landmarker = handLandmarkerRef.current
       if (!video || !landmarker || video.readyState < 2) {
@@ -102,14 +105,15 @@ export function HandTracking({
       }
 
       const now = performance.now()
-      if (now === lastTime) {
+      // MediaPipe requires strictly increasing timestamps
+      if (now <= lastTime) {
         rafRef.current = requestAnimationFrame(processFrame)
         return
       }
       lastTime = now
 
       try {
-        const results = landmarker.detectForVideo(video, now)
+        const results = landmarker.detectForVideo(video, Math.round(now))
         if (results?.landmarks?.length > 0) {
           const wrist = results.landmarks[0][0]
           positionsRef.current.push({ x: wrist.x, y: wrist.y })
@@ -125,22 +129,27 @@ export function HandTracking({
 
     rafRef.current = requestAnimationFrame(processFrame)
 
+    const startTime = Date.now()
     intervalRef.current = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 1) {
-          if (rafRef.current) cancelAnimationFrame(rafRef.current)
-          if (intervalRef.current) clearInterval(intervalRef.current)
-          const finalStability = computeStability(positionsRef.current)
-          setStatus("done")
+      const elapsed = Math.floor((Date.now() - startTime) / 1000)
+      const remaining = Math.max(0, TASK_DURATION - elapsed)
+      setTimeLeft(remaining)
+
+      if (remaining <= 0) {
+        doneRef.current = true
+        if (rafRef.current) cancelAnimationFrame(rafRef.current)
+        if (intervalRef.current) clearInterval(intervalRef.current)
+        const finalStability = computeStability(positionsRef.current)
+        setStatus("done")
+        // Defer the parent state update to avoid setState-during-render
+        setTimeout(() => {
           onComplete({
             stability: Math.round(finalStability * 10) / 10,
             samples: positionsRef.current.length,
           })
-          return 0
-        }
-        return prev - 1
-      })
-    }, 1000)
+        }, 0)
+      }
+    }, 250)
   }, [videoRef, cameraOn, computeStability, onComplete])
 
   const elapsed = TASK_DURATION - timeLeft
